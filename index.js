@@ -1,11 +1,11 @@
 // =========================
-// CORTEX IA - INDEX.JS (v6 - Final QR Fix + Puppeteer Args)
+// CORTEX IA - INDEX.JS (v8 - Final Mejorada + Owner Cmd)
 // =========================
 require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const qrcode = require('qrcode'); // Correct: require 'qrcode'
+const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const { DateTime } = require('luxon');
@@ -16,18 +16,49 @@ const MAX_TURNS = 12;
 
 // ======== Estado Global ========
 const state = {};
+let BOT_CONFIG = { ownerWhatsappId: null }; // Se cargará desde archivo
 
-// ======== GESTIÓN DE RESERVAS (PERSISTENTE) ========
+// ======== GESTIÓN PERSISTENTE (Reservas y Configuración) ========
 const DATA_DIR = path.join(__dirname, 'data');
 const DEMO_RESERVAS_PATH = path.join(DATA_DIR, 'demo_reservas.json');
-let DEMO_RESERVAS = {}; // Se cargará desde el archivo
+const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
+let DEMO_RESERVAS = {};
 
 // Asegurarse de que el directorio 'data' exista
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR);
 }
 
-// Cargar reservas desde el archivo al iniciar
+// Cargar/Guardar Configuración (Owner Number)
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const data = fs.readFileSync(CONFIG_PATH, 'utf8');
+      BOT_CONFIG = JSON.parse(data);
+      console.log('[Memoria] Configuración cargada.');
+      if (!BOT_CONFIG.ownerWhatsappId) {
+        console.warn('[Advertencia Config] ownerWhatsappId no encontrado en config.json. Usa /set owner para configurarlo.');
+      }
+    } else {
+      saveConfig(); // Crea el archivo si no existe
+      console.log('[Memoria] Archivo config.json creado. Usa /set owner para configurar el número del dueño.');
+    }
+  } catch (e) {
+    console.error('[Error Memoria] No se pudo cargar config.json:', e);
+    BOT_CONFIG = { ownerWhatsappId: null };
+  }
+}
+
+function saveConfig() {
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(BOT_CONFIG, null, 2), 'utf8');
+    console.log('[Memoria] Configuración guardada.');
+  } catch (e) {
+    console.error('[Error Memoria] No se pudo guardar config.json:', e);
+  }
+}
+
+// Cargar/Guardar Reservas Demo
 function loadReservas() {
   try {
     if (fs.existsSync(DEMO_RESERVAS_PATH)) {
@@ -45,7 +76,6 @@ function loadReservas() {
   }
 }
 
-// Guardar reservas en el archivo
 function saveReservas() {
   try {
     fs.writeFileSync(DEMO_RESERVAS_PATH, JSON.stringify(DEMO_RESERVAS, null, 2), 'utf8');
@@ -54,163 +84,57 @@ function saveReservas() {
   }
 }
 
-// Guardar reservas en el archivo
-function saveReservas() {
-  // ... (código existente) ...
-}
-
-// *** NUEVA FUNCIÓN PARA NOTIFICAR AL DUEÑO ***
-async function sendOwnerNotification(bookingData) {
-  const ownerId = process.env.OWNER_WHATSAPP_ID;
-  if (!ownerId) {
-    console.warn('[Advertencia Notificación] OWNER_WHATSAPP_ID no está configurado.');
-    return;
-  }
-
-  // Formateamos la fecha para que sea más legible
-  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
-
-  // Creamos el mensaje
-  const message = `🔔 *¡Nueva Cita Agendada!* 🔔
-
-Servicio: *${bookingData.servicio}*
-Fecha: *${fechaFormateada}*
-Hora: *${bookingData.hora_inicio}*
-
-_(Agendada por Cortex IA)_`;
-
-  // Enviamos el mensaje usando el cliente de WhatsApp existente
-  // Usamos .catch() por si hay un error al enviar (ej: número inválido)
-  await client.sendMessage(ownerId, message).catch(err => {
-      console.error(`[Error Notificación] Fallo al enviar a ${ownerId}:`, err);
-      // Podrías añadir lógica aquí para reintentar o marcar el error
-  });
-}
-// ********************************************
-
-// Cargar las reservas al iniciar el script
+// Cargar todo al iniciar
+loadConfig();
 loadReservas();
 
 // ======== DATOS DE LA DEMO (BARBERÍA LA 70) ========
-const BARBERIA_DATA = {
-  nombre: "Barbería La 70",
-  direccion: "Calle 70 #45-18, Belén, Medellín (esquina con Cra. 48)",
-  referencia: "Frente al Parque Belén, local 3 (al lado de la panadería El Molino)",
-  telefono: "+57 310 555 1234 (demo)",
-  instagram: "@barberial70 (demo)",
-  horario: {
-    lun_vie: "9:00 AM – 8:00 PM",
-    sab: "9:00 AM – 6:00 PM",
-    dom: "10:00 AM – 4:00 PM",
-    festivos: "Cerrado o solo por cita previa",
-    almuerzo_demo: { start: 13, end: 14 } // Bloqueo de 1:00 PM a 1:59 PM
-  },
-  capacidad: {
-    slot_base_min: 20 // Slots de 20 minutos
-  },
-  servicios: {
-    'corte clasico': { precio: 35000, min: 40 },
-    'corte + degradado + diseño': { precio: 55000, min: 60 },
-    'barba completa': { precio: 28000, min: 30 },
-    'corte + barba': { precio: 75000, min: 70 },
-    'afeitado tradicional': { precio: 45000, min: 45 },
-    'coloracion barba': { precio: 65000, min: 60 },
-    'arreglo patillas': { precio: 18000, min: 20 },
-    'vip': { precio: 120000, min: 90 }
-  },
-  pagos: ["Nequi", "Daviplata", "PSE", "Efectivo", "Datáfono (pago en el local)"],
-  faqs: [
-    { q: "¿Cómo puedo cancelar?", a: "Responde a este chat o llama al +57 310 555 1234. Cancela con 6+ horas para evitar cargo." },
-    { q: "¿Puedo cambiar la cita?", a: "Sí, reprogramamos si hay disponibilidad y avisas con 6+ horas." },
-    { q: "¿Aceptan tarjeta?", a: "Sí, datáfono, Nequi/Daviplata y efectivo." },
-    { q: "¿Tienen estacionamiento?", a: "Sí, 3 cupos en la parte trasera y parqueo público en la 70." }
-  ],
-  upsell: "¿Agregamos barba por $28.000? Queda en $75.000 el combo 😉"
+const BARBERIA_DATA = { /* ... (Mismos datos de antes, sin cambios) ... */
+    nombre: "Barbería La 70", direccion: "Calle 70 #45-18, Belén, Medellín (esquina con Cra. 48)", referencia: "Frente al Parque Belén, local 3 (al lado de la panadería El Molino)", telefono: "+57 310 555 1234 (demo)", instagram: "@barberial70 (demo)", horario: { lun_vie: "9:00 AM – 8:00 PM", sab: "9:00 AM – 6:00 PM", dom: "10:00 AM – 4:00 PM", festivos: "Cerrado o solo por cita previa", almuerzo_demo: { start: 13, end: 14 } }, capacidad: { slot_base_min: 20 }, servicios: { 'corte clasico': { precio: 35000, min: 40 }, 'corte + degradado + diseño': { precio: 55000, min: 60 }, 'barba completa': { precio: 28000, min: 30 }, 'corte + barba': { precio: 75000, min: 70 }, 'afeitado tradicional': { precio: 45000, min: 45 }, 'coloracion barba': { precio: 65000, min: 60 }, 'arreglo patillas': { precio: 18000, min: 20 }, 'vip': { precio: 120000, min: 90 } }, pagos: ["Nequi", "Daviplata", "PSE", "Efectivo", "Datáfono (pago en el local)"], faqs: [ { q: "¿Cómo puedo cancelar?", a: "Responde a este chat o llama al +57 310 555 1234. Cancela con 6+ horas para evitar cargo." }, { q: "¿Puedo cambiar la cita?", a: "Sí, reprogramamos si hay disponibilidad y avisas con 6+ horas." }, { q: "¿Aceptan tarjeta?", a: "Sí, datáfono, Nequi/Daviplata y efectivo." }, { q: "¿Tienen estacionamiento?", a: "Sí, 3 cupos en la parte trasera y parqueo público en la 70." } ], upsell: "¿Agregamos barba por $28.000? Queda en $75.000 el combo 😉"
 };
 
-// ======== PROMPT VENTAS (CORTEX IA - "STRAIGHT LINE") ========
+// ======== PROMPT VENTAS (CORTEX IA - "STRAIGHT LINE" + CTAs) ========
 const PROMPT_VENTAS = `
-Eres Cortex IA, un asistente de ventas experto de Cortex Agency. Usas la metodología "Straight Line".
-Tu personalidad es: 1. Aguda (Sharp as a tack), 2. Entusiasta (Bottled enthusiasm), 3. Experta (Expert in your field).
-Hablas como un "parcero" colombiano, profesional y 100% seguro. Tu tono es clave.
+Eres Cortex IA, un asistente de ventas experto de Cortex Agency. Usas la metodología "Straight Line". Tu personalidad es aguda, entusiasta y experta. Hablas como un "parcero" colombiano, profesional y seguro.
 
-Tu objetivo es vender el asistente de IA a dueños de negocios (barberías, spas, uñas).
-El DOLOR principal del cliente es: "Pierdo citas y dinero por no poder contestar WhatsApp 24/7."
+Tu objetivo es vender el asistente de IA a dueños de negocios (barberías, spas, uñas), enfocándote en su DOLOR: "Pierdo citas y dinero por no poder contestar WhatsApp 24/7."
 
-== REGLAS DE COMPORTAMIENTO (STRAIGHT LINE) ==
-1.  **Toma Control (Primeros 4 Segundos):**
-    * Si saludan: "¡Hey! 👋 Soy Cortex IA. Ayudo a dueños de negocios como tú a dejar de perder citas por no responder a tiempo. ¿Te ha pasado que te escriben a las 10 PM para agendar y ves el mensaje al otro día... y ya es tarde?"
-2.  **Identifica el Dolor (Inteligencia):**
-    * Haz preguntas que amplifiquen el dolor.
-    * Usuario: "A veces me pasa."
-    * Tú: "Total. Y cada cliente que no responde en 5 min, se va a la competencia. Es dinero que se te está yendo. Yo trabajo 24/7, incluso mientras duermes, para asegurar cada cita."
-3.  **Manejo de Objeciones (Looping):**
-    * NUNCA respondas una objeción directamente. Defléctala, valida, y vuelve a la línea.
-    * **Objeción 1:** "Yo mismo respondo mis mensajes."
-    * **Loop:** "¡Total! Y seguro lo haces genial. Pero déjame preguntarte, ¿la idea de tener un asistente que agende por ti mientras duermes o estás ocupado en un corte... tiene sentido para ti? ¿Te gusta esa idea?"
-    * **Objeción 2:** "Mis clientes no confían en bots."
-    * **Loop:** "Te entiendo perfectamente. Por eso yo no sueno como un robot, ¿cierto? 😉 Hablo natural. Pero, ¿la idea de que tus clientes sean atendidos al segundo, a cualquier hora, te parece valiosa?"
-    * **Objeción 3:** "Debe ser muy caro."
-    * **Loop:** "Entiendo la preocupación por el costo. Pero, ¿cuánto dinero crees que pierdes al mes por citas no agendadas? Si este sistema te recupera solo 3 o 4 citas, ya se pagó solo. ¿Ves el valor de la idea?"
-4.  **Cierre (Llevarlo a la Demo):**
-    * Tu cierre es la DEMO.
-    * "Mira, basado en lo que me dices, esto es un encaje perfecto. La mejor forma de verlo es probarlo. Tengo una demo de barbería lista."
-    * "Escribe /start test y prueba tú mismo cómo atiendo a un cliente."
+== REGLAS (STRAIGHT LINE) ==
+1.  **Toma Control:** Si saludan, responde cálido e inmediatamente introduce el dolor: "¡Hey! 👋 Soy Cortex IA. Ayudo a dueños de negocios como tú a dejar de perder citas por no responder a tiempo. ¿Te ha pasado que te escriben tarde para agendar y al otro día ya es tarde?"
+2.  **Amplifica el Dolor:** Haz preguntas que lo refuercen: "Total. Y cada cliente que no responde rápido, se va con otro. Es plata que se pierde. Yo aseguro cada cita, 24/7."
+3.  **Manejo de Objeciones (Looping):** Deflecta, valida y vuelve a la línea.
+    * "Yo mismo respondo": "¡Claro! Pero, ¿la idea de tener a alguien agendando *mientras* duermes o trabajas, tiene sentido para ti?"
+    * "No confían en bots": "Te entiendo. Por eso no sueno robot 😉. Pero, ¿la idea de atención *instantánea* a cualquier hora, te parece valiosa?"
+    * "Es caro": "Entiendo. Pero, ¿cuánto pierdes al mes por citas no agendadas? Si esto te recupera 3-4 citas, se pagó solo. ¿Ves el valor de la idea?"
+4.  **Cierre (Demo):** Tu cierre principal es la DEMO: "Mira, basado en lo que dices, esto es perfecto para ti. La mejor forma de verlo es probarlo. Tengo una demo de barbería lista. Escribe /start test y pruébalo tú mismo."
 5.  **Flujo Post-Demo:**
-    * Cuando el usuario vuelve (\`/end test\`), tú dices: "¡Demo finalizada! ¿Qué tal te pareció? ¿Viste cómo agendé la cita sin problemas? Si te interesa, te explico cómo dejamos uno igual en tu WhatsApp en 1–2 días."
-    * Si responden "me gustó", "me interesa", "sí", "brutal" →
-    * **Cierre Final:** "Perfecto 🔥. Ese es el poder de no volver a perder un cliente. Te puedo agendar con uno de los chicos del equipo de Cortex para personalizar tu asistente. Solo confírmame tu nombre y tipo de negocio, y te mandamos la propuesta enseguida 🚀"
+    * Al volver (\`/end test\`): "¡Demo finalizada! ¿Qué tal? ¿Viste cómo agendé? Si te interesa, te explico cómo lo dejamos en tu WhatsApp en 1–2 días."
+    * Si responden SÍ/ME GUSTÓ/BRUTAL: "Perfecto 🔥. Ese es el poder de no perder clientes. Te agendo con el equipo para personalizar tu asistente. ¿Tu nombre y tipo de negocio? 🚀"
+    * Si responden OTRA COSA: NO resaludes. Ofrece opciones: "¿Prefieres que te lo deje en tu WhatsApp o primero una llamada corta?"
 `;
+// CTAs para el modo Cortex
+const CTAs = [
+  "¿Quieres verlo en acción ahora? Escribe /start test 💈",
+  "¿Agendamos una llamada rápida de 10 min y te explico cómo lo ponemos en tu WhatsApp?",
+];
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// ======== PROMPT DEMO (BARBERÍA - CORREGIDO v2) ========
-function getPromptDemoBarberia(slotsDisponibles) {
-  const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy'); // "martes 21 octubre, 2025"
-  const hoyDiaSemana = now().weekday; // 1 (Lunes) a 7 (Domingo)
-
-  const serviciosTxt = Object.entries(BARBERIA_DATA.servicios)
-    .map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`)
-    .join('\n');
-
-  let slotsTxt = "Lo siento, no veo cupos disponibles en los próximos 3 días. Pregúntame por otra fecha.";
-  if (slotsDisponibles && slotsDisponibles.length) {
-     // Formateamos un poco mejor para la IA
-     slotsTxt = slotsDisponibles.map(d => {
-        const fechaFormateada = DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d LLLL');
-        return `  - ${fechaFormateada} (${d.fecha}): ${d.horas.join(', ')}`;
-     }).join('\n');
-  }
-
-  // Obtener el horario de hoy para respuestas generales
-  let horarioHoy = BARBERIA_DATA.horario.festivos; // Default
-  if (hoyDiaSemana >= 1 && hoyDiaSemana <= 5) horarioHoy = BARBERIA_DATA.horario.lun_vie;
-  else if (hoyDiaSemana === 6) horarioHoy = BARBERIA_DATA.horario.sab;
-  else if (hoyDiaSemana === 7) horarioHoy = BARBERIA_DATA.horario.dom;
-
-
-  return `
-Eres el "Asistente Cortex Barbershop", el asistente IA de **${BARBERIA_DATA.nombre}**.
-Actúa como un humano: amable, profesional, eficiente y 100% colombiano (de Medellín).
-Tu ÚNICO objetivo es agendar citas y responder preguntas sobre la barbería.
-NUNCA digas que eres una demo. Eres el asistente real. Hoy es ${hoy}.
+// ======== PROMPT DEMO (BARBERÍA - v3 Con NLU Hints) ========
+function getPromptDemoBarberia(slotsDisponibles) { /* ... (Misma función de antes, con las reglas de horario mejoradas, sin cambios aquí) ... */
+    const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy'); const hoyDiaSemana = now().weekday; const serviciosTxt = Object.entries(BARBERIA_DATA.servicios).map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`).join('\n'); let slotsTxt = "Lo siento, no veo cupos disponibles en los próximos 3 días. Pregúntame por otra fecha."; if (slotsDisponibles && slotsDisponibles.length) { slotsTxt = slotsDisponibles.map(d => { const fechaFormateada = DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d LLLL'); return `  - ${fechaFormateada} (${d.fecha}): ${d.horas.join(', ')}`; }).join('\n'); } let horarioHoy = BARBERIA_DATA.horario.festivos; if (hoyDiaSemana >= 1 && hoyDiaSemana <= 5) horarioHoy = BARBERIA_DATA.horario.lun_vie; else if (hoyDiaSemana === 6) horarioHoy = BARBERIA_DATA.horario.sab; else if (hoyDiaSemana === 7) horarioHoy = BARBERIA_DATA.horario.dom; return `
+Eres el "Asistente Cortex Barbershop", el asistente IA de **${BARBERIA_DATA.nombre}**. Actúa como un humano: amable, profesional, eficiente y 100% colombiano (de Medellín). Tu ÚNICO objetivo es agendar citas y responder preguntas sobre la barbería. NUNCA digas que eres una demo. Eres el asistente real. Hoy es ${hoy}.
 
 == REGLAS DE AGENDAMIENTO Y HORARIOS (MUY IMPORTANTE) ==
-
 1.  **Naturalidad y Calidez:** Saluda amablemente ("¡Hola! Bienvenido a Barbería La 70...") y pregunta qué necesita.
 2.  **Formato de Fecha:** Usa formatos amigables ("Martes 21 de Octubre").
-3.  **Flujo Conversacional:**
-    1. Pregunta el **servicio**.
-    2. Di precio/duración (ej: "Perfecto, el corte clásico cuesta $35.000 y dura unos 40 min.")
-    3. **PREGUNTA POR HORA DESEADA:** "¿Para qué día y hora te gustaría agendar?"
+3.  **Flujo Conversacional:** 1. Pregunta el **servicio**. 2. Di precio/duración. 3. **PREGUNTA POR HORA DESEADA:** "¿Para qué día y hora te gustaría agendar?"
 4.  **CÓMO RESPONDER SOBRE HORARIOS (CRÍTICO):**
-    * **Si preguntan genéricamente por horas** (ej: "¿Qué horas tienen?", "¿Hasta qué hora trabajan hoy?"): Responde con el **horario general del día**, NO con slots específicos. Usa la sección "INFO DEL NEGOCIO" para esto. (Ej: "¡Claro! Hoy Martes estamos abiertos de ${horarioHoy}.").
-    * **Si preguntan por una HORA ESPECÍFICA** (ej: "¿Tienes cita a las 4 PM?", "Mañana a las 10 AM"): **Revisa** si esa hora EXACTA está en la lista de 'SLOTS DISPONIBLES' para el día correspondiente.
-        * Si SÍ está libre: Confirma directamente (ej: "¡Sí! A las 4 PM está libre. ¿Agendamos a esa hora? ¿A nombre de quién?").
-        * Si NO está libre: Di que no está disponible y ofrece **SOLO 1 o 2 alternativas cercanas** de la lista 'SLOTS DISPONIBLES' (ej: "Uy, justo a las 4 PM ya está ocupado. ¿Te sirve de pronto a las 4:20 PM o 4:40 PM?").
-    * **NUNCA listes más de 2-3 horas seguidas**, a menos que el cliente insista mucho. Es abrumador. Prioriza responder a la hora específica que pidan.
-5.  **NO MOSTRAR LÓGICA INTERNA:** Nunca digas "se reservan los siguientes slots". Solo confirma la cita.
-6.  **NO INVENTAR REGLAS:** No inventes horarios (ej: "solo en la mañana"). Usa la info del negocio.
-7.  **ETIQUETA DE RESERVA (PARA EL SISTEMA):** Al confirmar, **DEBES** incluir la etiqueta invisible <BOOKING: {...}> con `servicio`, `fecha`, `hora_inicio`, y `slots_usados` calculados (Servicio 30-40 min = 2 slots, 50-60 min = 3 slots, 90 min = 5 slots).
-    * Ejemplo: <BOOKING: {"servicio": "corte clasico", "fecha": "2025-10-21", "hora_inicio": "9:00 AM", "slots_usados": ["9:00 AM", "9:20 AM"]}>
+    * **Si preguntan genéricamente por horas** (ej: "¿Qué horas tienen?"): Responde con el **horario general del día**, NO con slots específicos. (Ej: "¡Claro! Hoy Martes estamos abiertos de ${horarioHoy}.").
+    * **Si preguntan por una HORA ESPECÍFICA** (ej: "¿Tienes cita a las 4 PM?"): **Revisa** si esa hora EXACTA está en la lista de 'SLOTS DISPONIBLES'. Si SÍ: Confirma directamente (ej: "¡Sí! A las 4 PM está libre. ¿Agendamos? ¿A nombre de quién?"). Si NO: Ofrece **SOLO 1 o 2 alternativas cercanas** de la lista (ej: "Uy, a las 4 PM ya está ocupado. ¿Te sirve 4:20 PM o 4:40 PM?").
+    * **NUNCA listes más de 2-3 horas seguidas**. Prioriza responder a la hora específica que pidan.
+5.  **NO MOSTRAR LÓGICA INTERNA:** Nunca digas "se reservan los slots". Solo confirma la cita.
+6.  **NO INVENTAR REGLAS:** No inventes horarios. Usa la info del negocio.
+7.  **ETIQUETA DE RESERVA (PARA EL SISTEMA):** Al confirmar, **DEBES** incluir la etiqueta invisible <BOOKING: {...}> con \`servicio\`, \`fecha\`, \`hora_inicio\`, y \`slots_usados\` calculados (30-40min=2 slots, 50-60min=3 slots, 90min=5 slots). Ejemplo: <BOOKING: {"servicio": "corte clasico", "fecha": "2025-10-21", "hora_inicio": "9:00 AM", "slots_usados": ["9:00 AM", "9:20 AM"]}>
 8.  **Upsell:** *Después* de confirmar, ofrece el upsell: "${BARBERIA_DATA.upsell}".
 
 == SLOTS DISPONIBLES (LISTA INTERNA PARA TI - NO MOSTRAR AL CLIENTE DIRECTAMENTE) ==
@@ -218,41 +142,51 @@ ${slotsTxt}
 
 == INFO DEL NEGOCIO (PARA RESPONDER PREGUNTAS GENERALES) ==
 Nombre: ${BARBERIA_DATA.nombre}
-Horario General:
-- Lun–Vie: ${BARBERIA_DATA.horario.lun_vie} (Hoy: ${horarioHoy})
-- Sáb: ${BARBERIA_DATA.horario.sab}
-- Dom: ${BARBERIA_DATA.horario.dom}
-(Recuerda el break de almuerzo de 1 PM a 2 PM, esos slots no aparecerán en la lista interna).
-Servicios Principales:
-${serviciosTxt}
-Dirección: ${BARBERIA_DATA.direccion}
-Pagos: ${BARBERIA_DATA.pagos.join(', ')}
-FAQs:
-${BARBERIA_DATA.faqs.map(f => `- P: ${f.q}\n  R: ${f.a}`).join('\n')}
+Horario General: - Lun–Vie: ${BARBERIA_DATA.horario.lun_vie} (Hoy: ${horarioHoy}) - Sáb: ${BARBERIA_DATA.horario.sab} - Dom: ${BARBERIA_DATA.horario.dom} (Recuerda el break de almuerzo 1 PM-2 PM, filtrado de la lista).
+Servicios Principales: ${serviciosTxt}
+Dirección: ${BARBERIA_DATA.direccion} Pagos: ${BARBERIA_DATA.pagos.join(', ')}
+FAQs: ${BARBERIA_DATA.faqs.map(f => `- P: ${f.q}\n  R: ${f.a}`).join('\n')}
 `;
 }
 
 // ======== Utilidades ========
 function now() { return DateTime.now().setZone(TZ); }
 
-// ===== Gestión de Estado =====
+// --- NLU Ligero ---
+function detectServicio(text) { const m = text.toLowerCase(); if (m.includes('vip')) return 'vip'; if (m.includes('degrad')) return 'corte + degradado + diseño'; if (m.includes('barba')) return 'barba completa'; if (m.includes('patilla')) return 'arreglo patillas'; if (m.includes('afeitado')) return 'afeitado tradicional'; if (m.includes('color')) return 'coloracion barba'; if (m.includes('corte')) return 'corte clasico'; return null; }
+function detectHoraExacta(text) { const h = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i); return h ? h[0] : null; } // Devuelve '9 am', '4:20 PM', etc.
+function detectHoyOMañana(text) { if (/\bhoy\b/i.test(text)) return 0; if (/\bmañana|manana\b/i.test(text)) return 1; return null; } // Devuelve 0 para hoy, 1 para mañana
+// --- Fin NLU ---
+
+// --- Cálculo de Slots Usados (Fallback) ---
+function calcularSlotsUsados(horaInicio, durMin) {
+  const n = Math.ceil(durMin / BARBERIA_DATA.capacidad.slot_base_min);
+  const start = DateTime.fromFormat(horaInicio.toUpperCase(), 'h:mm a', { zone: TZ });
+  if (!start.isValid) return [horaInicio]; // Fallback si la hora es inválida
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    arr.push(start.plus({ minutes: i * BARBERIA_DATA.capacidad.slot_base_min }).toFormat('h:mm a'));
+  }
+  return arr;
+}
+// --- Fin Cálculo Slots ---
+
+// ===== Gestión de Estado y Contexto =====
 function ensureState(id) {
   if (!state[id]) {
     state[id] = {
       botEnabled: true,
       mode: 'cortex',
       history: [],
-      sales: {
-        lastOffer: null,
-        awaiting: null
-      }
+      sales: { lastOffer: null, awaiting: null },
+      // --- Contexto Ligero ---
+      ctx: { lastServicio: null, lastHorasSugeridas: [] }
+      // --- Fin Contexto ---
     };
   }
   return state[id];
 }
-
 function setState(id, s) { state[id] = s; }
-
 function pushHistory(id, role, content) {
   const s = ensureState(id);
   s.history.push({ role, content, at: Date.now() });
@@ -260,159 +194,42 @@ function pushHistory(id, role, content) {
 }
 
 // ===== Gestión de Reservas (Demo) =====
-
-// *** FUNCIÓN QUE FALTABA ***
-function parseRango(fecha, rango) {
-  const [ini, fin] = rango.split('–').map(s => s.trim());
-  const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({
-    year: fecha.year, month: fecha.month, day: fecha.day
-  });
-  const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({
-    year: fecha.year, month: fecha.month, day: fecha.day
-  });
-  return [open, close];
+function parseRango(fecha, rango) { /* ... (Misma función parseRango) ... */
+    const [ini, fin] = rango.split('–').map(s => s.trim()); const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); return [open, close];
 }
-// ***************************
-
-async function addReserva(fecha, hora_inicio, servicio, slots_usados = []) { // Añadimos parámetros
-  if (!DEMO_RESERVAS[fecha]) {
-    DEMO_RESERVAS[fecha] = [];
-  }
-  let reservaNueva = false; // Bandera para saber si se añadió algo nuevo
-  slots_usados.forEach(hora => {
-    if (!DEMO_RESERVAS[fecha].includes(hora)) {
-      DEMO_RESERVAS[fecha].push(hora);
-      console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`);
-      reservaNueva = true; // Marcamos que sí hubo una reserva nueva
-    }
-  });
-  saveReservas(); // Guardamos en el archivo JSON
-
-  // *** NUEVO: Enviar notificación si la reserva es nueva ***
-  if (reservaNueva && process.env.OWNER_WHATSAPP_ID) {
-    try {
-      await sendOwnerNotification({ fecha, hora_inicio, servicio });
-      console.log(`[Notificación] Enviada al dueño por nueva reserva.`);
-    } catch (error) {
-      console.error('[Error Notificación] No se pudo enviar mensaje al dueño:', error);
-    }
-  }
-  // **********************************************************
+async function addReserva(fecha, hora_inicio, servicio, slots_usados = []) { /* ... (Misma función addReserva, llama a sendOwnerNotification) ... */
+    if (!DEMO_RESERVAS[fecha]) DEMO_RESERVAS[fecha] = []; let reservaNueva = false; slots_usados.forEach(hora => { if (!DEMO_RESERVAS[fecha].includes(hora)) { DEMO_RESERVAS[fecha].push(hora); console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`); reservaNueva = true; } }); saveReservas(); if (reservaNueva && BOT_CONFIG.ownerWhatsappId) { try { await sendOwnerNotification({ fecha, hora_inicio, servicio }); console.log(`[Notificación] Enviada al dueño por nueva reserva.`); } catch (error) { console.error('[Error Notificación] No se pudo enviar mensaje al dueño:', error); } }
 }
-
-// Justo después de addReserva, necesitas también la función sendOwnerNotification si no la tienes ya
-async function sendOwnerNotification(bookingData) {
-  const ownerId = process.env.OWNER_WHATSAPP_ID;
-  if (!ownerId) {
-    console.warn('[Advertencia Notificación] OWNER_WHATSAPP_ID no está configurado.');
-    return;
-  }
-
-  // Formateamos la fecha para que sea más legible
-  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
-
-  // Creamos el mensaje
-  const message = `🔔 *¡Nueva Cita Agendada!* 🔔
-
-Servicio: *${bookingData.servicio}*
-Fecha: *${fechaFormateada}*
-Hora: *${bookingData.hora_inicio}*
-
-_(Agendada por Cortex IA)_`;
-
-  // Enviamos el mensaje usando el cliente de WhatsApp existente
-  await client.sendMessage(ownerId, message).catch(err => {
-      console.error(`[Error Notificación] Fallo al enviar a ${ownerId}:`, err);
-  });
+async function sendOwnerNotification(bookingData) { /* ... (Misma función sendOwnerNotification, usa BOT_CONFIG) ... */
+    const ownerId = BOT_CONFIG.ownerWhatsappId; if (!ownerId) { console.warn('[Advertencia Notificación] ownerWhatsappId no está configurado en config.json.'); return; } const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL'); const message = `🔔 *¡Nueva Cita Agendada!* 🔔\n\nServicio: *${bookingData.servicio}*\nFecha: *${fechaFormateada}*\nHora: *${bookingData.hora_inicio}*\n\n_(Agendada por Cortex IA)_`; await client.sendMessage(ownerId, message).catch(err => { console.error(`[Error Notificación] Fallo al enviar a ${ownerId}:`, err); });
 }
-function generarSlotsDemo(diasAdelante = 3) {
-  const hoy = now();
-  const out = [];
-  const slotMin = BARBERIA_DATA.capacidad.slot_base_min; // 20 min
-  const { almuerzo_demo } = BARBERIA_DATA.horario;
-
-  for (let d = 0; d < diasAdelante; d++) {
-    const fecha = hoy.plus({ days: d });
-    const fechaStr = fecha.toFormat('yyyy-LL-dd');
-    const wd = fecha.weekday; // 1..7
-    let open, close;
-
-    if (wd >= 1 && wd <= 5) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.lun_vie);
-    else if (wd === 6) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.sab);
-    else [open, close] = parseRango(fecha, BARBERIA_DATA.horario.dom);
-
-    let cursor = open;
-    if (d === 0 && hoy > open) {
-      const minsSinceOpen = hoy.diff(open, 'minutes').minutes;
-      const nextSlot = Math.ceil(minsSinceOpen / slotMin) * slotMin;
-      cursor = open.plus({ minutes: nextSlot });
-    }
-
-    const horas = [];
-    while (cursor < close) {
-      const hh = cursor.toFormat('h:mm a');
-      const hora24 = cursor.hour;
-
-      const ocupada = DEMO_RESERVAS[fechaStr] && DEMO_RESERVAS[fechaStr].includes(hh);
-      const esAlmuerzo = (hora24 >= almuerzo_demo.start && hora24 < almuerzo_demo.end);
-
-      if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) {
-        horas.push(hh);
-      }
-      if (horas.length >= 20) break;
-
-      cursor = cursor.plus({ minutes: slotMin });
-    }
-
-    if (horas.length) out.push({ fecha: fechaStr, horas });
-  }
-  return out;
+function generarSlotsDemo(diasAdelante = 3) { /* ... (Misma función generarSlotsDemo, usa parseRango) ... */
+    const hoy = now(); const out = []; const slotMin = BARBERIA_DATA.capacidad.slot_base_min; const { almuerzo_demo } = BARBERIA_DATA.horario; for (let d = 0; d < diasAdelante; d++) { const fecha = hoy.plus({ days: d }); const fechaStr = fecha.toFormat('yyyy-LL-dd'); const wd = fecha.weekday; let open, close; if (wd >= 1 && wd <= 5) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.lun_vie); else if (wd === 6) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.sab); else [open, close] = parseRango(fecha, BARBERIA_DATA.horario.dom); let cursor = open; if (d === 0 && hoy > open) { const minsSinceOpen = hoy.diff(open, 'minutes').minutes; const nextSlot = Math.ceil(minsSinceOpen / slotMin) * slotMin; cursor = open.plus({ minutes: nextSlot }); } const horas = []; while (cursor < close) { const hh = cursor.toFormat('h:mm a'); const hora24 = cursor.hour; const ocupada = DEMO_RESERVAS[fechaStr] && DEMO_RESERVAS[fechaStr].includes(hh); const esAlmuerzo = (hora24 >= almuerzo_demo.start && hora24 < almuerzo_demo.end); if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) { horas.push(hh); } if (horas.length >= 20) break; cursor = cursor.plus({ minutes: slotMin }); } if (horas.length) out.push({ fecha: fechaStr, horas }); } return out;
 }
 
 // ======== WHATSAPP CLIENT ========
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: path.join(__dirname, 'data', 'session') // <-- Tells it to save session IN /app/data/session
-  }),
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ],
-  },
+const client = new Client({ /* ... (Misma configuración, con LocalAuth dataPath y puppeteer args) ... */
+    authStrategy: new LocalAuth({ dataPath: path.join(__dirname, 'data', 'session') }), puppeteer: { headless: true, args: [ '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu' ], },
 });
-
-// *** THIS IS THE CORRECT QR CODE BLOCK ***
-client.on('qr', (qr) => {
-  console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n');
-  qrcode.toDataURL(qr, (err, url) => {
-    if (err) {
-      console.error("Error generando QR Data URL:", err);
-      return;
-    }
-    console.log(url); // This will print the data:image/png;base64,... URL
-    console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑');
-  });
+client.on('qr', (qr) => { /* ... (Mismo QR con toDataURL) ... */
+    console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n'); qrcode.toDataURL(qr, (err, url) => { if (err) { console.error("Error generando QR Data URL:", err); return; } console.log(url); console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑'); });
 });
-
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
+client.on('auth_failure', msg => { console.error('ERROR DE AUTENTICACIÓN:', msg); });
+client.on('disconnected', (reason) => { console.log('Cliente desconectado:', reason); });
 
-// Enhanced Error Handling for Authentication Failure
-client.on('auth_failure', msg => {
-    console.error('ERROR DE AUTENTICACIÓN:', msg);
-});
-
-client.on('disconnected', (reason) => {
-    console.log('Cliente desconectado:', reason);
-    // Consider adding logic here to attempt reconnection or notify admin
-});
+// ======== LLAMADA SEGURA A OPENAI (CON RETRY) ========
+async function safeChatCall(payload, tries = 2) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await openai.chat.completions.create(payload);
+    } catch (e) {
+      console.error(`[Error OpenAI] Intento ${i + 1} fallido:`, e.message);
+      if (i === tries - 1) throw e; // Lanza el error final si todos los intentos fallan
+      await new Promise(r => setTimeout(r, 700)); // Espera antes de reintentar
+    }
+  }
+}
 
 // ======== HANDLER MENSAJES ========
 client.on('message', async (msg) => {
@@ -422,89 +239,96 @@ client.on('message', async (msg) => {
     const low = text.toLowerCase();
 
     const s = ensureState(from);
-    pushHistory(from, 'user', text); // Guardar historial de usuario
+    pushHistory(from, 'user', text);
 
-    // 2. BOT ON/OFF
-    if (/^\/bot\s+off$/i.test(low)) {
-      s.botEnabled = false; setState(from, s);
-      return msg.reply('Perfecto 👌 quedas tú al mando. Cuando quieras que responda de nuevo, escribe /bot on.');
-    }
-    if (/^\/bot\s+on$/i.test(low)) {
-      s.botEnabled = true; setState(from, s);
-      return msg.reply('Listo, vuelvo a ayudarte 24/7 💪');
-    }
-    if (!s.botEnabled) return;
-
-    // 3. TEST DEMO on/off
-    if (/^\/start\s+test$/i.test(low)) {
-      s.mode = 'barberia';
-      s.history = []; // Limpiar historial para la demo
-      setState(from, s);
-      return msg.reply(
-        `Demo activada: *${BARBERIA_DATA.nombre}* 💈\n` +
-        `Escríbeme como cliente (ej: "corte + degradado", "¿tienen hora hoy?").`
-      );
-    }
-    if (/^\/end\s+test$/i.test(low)) {
-      s.mode = 'cortex';
-      s.history = []; // Limpiar historial para ventas
-      s.sales.awaiting = 'confirm'; // Preparar el estado de ventas
-      setState(from, s);
-      return msg.reply('¡Demo finalizada! ¿Qué tal te pareció? ¿Viste cómo agendé la cita sin problemas? Si te interesa, te explico cómo dejamos uno igual en tu WhatsApp en 1–2 días.');
-    }
-
-    // Comando para limpiar reservas (solo para ti, el admin)
-    if (/^\/clear\s+reservas\s+demo$/i.test(low)) {
-        DEMO_RESERVAS = {};
-        saveReservas();
-        console.log('[Memoria] Reservas de demo limpiadas por el admin.');
-        return msg.reply('🧹 Reservas de la demo limpiadas.');
-    }
-
-    // 4. ===== MODO DEMO: BARBERÍA (CON IA) =====
-    if (s.mode === 'barberia') {
-      const slots = generarSlotsDemo(3);
-      const promptSystem = getPromptDemoBarberia(slots);
-
-      const messages = [
-        { role: 'system', content: promptSystem },
-        ...s.history.slice(-MAX_TURNS),
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages,
-        max_tokens: 300
-      });
-      let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí, ¿qué servicio quieres?';
-
-     // Analizar la respuesta por el <BOOKING>
-      const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
-      if (bookingMatch && bookingMatch[1]) {
-        try {
-          const bookingData = JSON.parse(bookingMatch[1]);
-
-          // *** LÍNEA MODIFICADA ***
-          // Asegurarse de que todos los campos necesarios existan
-          if (bookingData.fecha && bookingData.hora_inicio && bookingData.servicio && bookingData.slots_usados) {
-             await addReserva(
-                bookingData.fecha,
-                bookingData.hora_inicio,
-                bookingData.servicio,
-                bookingData.slots_usados
-             ); // Pasamos todos los datos y usamos await
-          } else {
-             console.error("[Error Booking] Faltan datos en la etiqueta BOOKING:", bookingData);
-          }
-          // ***********************
-
-          reply = reply.replace(/<BOOKING:.*?>/, '').trim(); // Limpiar tag
-          console.log(`[Reserva Demo Detectada]`, bookingData);
-
-        } catch (e) {
-          console.error('Error parseando JSON de booking:', e.message);
+    // --- Comandos Administrativos ---
+    if (from === BOT_CONFIG.ownerWhatsappId) { // Solo el dueño puede ejecutar
+      if (low.startsWith('/set owner ')) {
+        const newOwner = low.split(' ')[2]?.trim();
+        // Validación básica de formato
+        if (newOwner && /^\d+@c\.us$/.test(newOwner)) {
+          BOT_CONFIG.ownerWhatsappId = newOwner;
+          saveConfig(); // Guarda el cambio en config.json
+          return msg.reply(`✅ Número de dueño actualizado a: ${newOwner}`);
+        } else {
+          return msg.reply('❌ Formato inválido. Usa: /set owner numero@c.us (ej: /set owner 573101234567@c.us)');
         }
       }
+      if (low === '/clear reservas demo') {
+        DEMO_RESERVAS = {}; saveReservas();
+        console.log('[Memoria] Reservas de demo limpiadas por el admin.');
+        return msg.reply('🧹 Reservas de la demo limpiadas.');
+      }
+    }
+    // --- Fin Comandos Admin ---
+
+    // 2. BOT ON/OFF
+    if (low === '/bot off') { s.botEnabled = false; setState(from, s); return msg.reply('👌 Quedas tú al mando. Escribe /bot on para reactivarme.'); }
+    if (low === '/bot on') { s.botEnabled = true; setState(from, s); return msg.reply('💪 ¡Listo! Vuelvo a ayudarte 24/7.'); }
+    if (!s.botEnabled && !(low.startsWith('/set owner') || low === '/clear reservas demo')) return; // Ignora si está apagado, excepto comandos admin
+
+
+    // 3. TEST DEMO on/off
+    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = { lastServicio: null, lastHorasSugeridas: [] }; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre}* 💈 (Demo Activada)\nEscríbeme como cliente (ej: "corte", "¿tienen hora hoy?").`); }
+    if (low === '/end test') { s.mode = 'cortex'; s.history = []; s.sales.awaiting = 'confirm'; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? ¿Viste cómo agendé? Si te interesa, te explico cómo lo dejamos en tu WhatsApp en 1–2 días.'); }
+
+
+    // 4. ===== MODO DEMO: BARBERÍA (CON NLU + IA) =====
+    if (s.mode === 'barberia') {
+      const servicioDetectado = detectServicio(text);
+      const horaDetectada = detectHoraExacta(text); // '9 am', '4:20 PM'
+      const offset = detectHoyOMañana(text); // 0 o 1
+      const pideHorarioGeneral = /horario|horas|hasta que hora|a que horas|disponibilidad/i.test(low) && !horaDetectada && !servicioDetectado;
+
+      // --- Manejo con NLU ---
+      if (pideHorarioGeneral) {
+        const hoyDia = now().weekday; let horarioHoy = BARBERIA_DATA.horario.festivos;
+        if (hoyDia >= 1 && hoyDia <= 5) horarioHoy = BARBERIA_DATA.horario.lun_vie;
+        else if (hoyDia === 6) horarioHoy = BARBERIA_DATA.horario.sab;
+        else if (hoyDia === 7) horarioHoy = BARBERIA_DATA.horario.dom;
+        const reply = `¡Claro! Hoy atendemos de ${horarioHoy}. ¿Qué servicio te gustaría agendar? (corte, barba, etc.) 😉`;
+        pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
+      }
+
+      // --- Si no es horario general, dejamos que la IA maneje el flujo ---
+      s.ctx.lastServicio = servicioDetectado || s.ctx.lastServicio; // Actualizar contexto
+      setState(from, s);
+
+      const slots = generarSlotsDemo(3);
+      const promptSystem = getPromptDemoBarberia(slots);
+      const messages = [ { role: 'system', content: promptSystem }, ...s.history.slice(-MAX_TURNS) ];
+
+      // Usa safeChatCall con retry
+      const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 350 }); // Aumentado max_tokens
+      let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí bien, ¿qué servicio necesitas?';
+
+      // --- Analizar y Guardar Reserva (con Fallback) ---
+      const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
+      let bookingData = null;
+      if (bookingMatch && bookingMatch[1]) {
+        try { bookingData = JSON.parse(bookingMatch[1]); } catch (e) { console.error('Error parseando JSON de booking (IA):', e.message); }
+      }
+
+      // Fallback si la IA olvidó el tag o los slots_usados
+      if (bookingData && (!bookingData.slots_usados || bookingData.slots_usados.length === 0)) {
+           const servicio = bookingData.servicio || s.ctx.lastServicio;
+           const dur = servicio && BARBERIA_DATA.servicios[servicio.toLowerCase()]?.min;
+           if(bookingData.hora_inicio && dur) {
+               bookingData.slots_usados = calcularSlotsUsados(bookingData.hora_inicio, dur);
+               console.log("[Fallback Booking] Slots calculados:", bookingData.slots_usados);
+           }
+      }
+
+      if (bookingData?.fecha && bookingData?.hora_inicio && bookingData?.servicio && bookingData?.slots_usados?.length > 0) {
+        await addReserva( bookingData.fecha, bookingData.hora_inicio, bookingData.servicio, bookingData.slots_usados );
+        reply = reply.replace(/<BOOKING:.*?>/, '').trim(); // Limpiar tag visible
+        console.log(`[Reserva Demo Detectada y Guardada]`, bookingData);
+        s.history = []; // Limpiar historial post-reserva
+      } else if (bookingMatch) {
+         console.warn("[Advertencia Booking] Tag BOOKING detectado pero incompleto o inválido:", bookingData || bookingMatch[1]);
+         reply = reply.replace(/<BOOKING:.*?>/, '').trim(); // Limpiar tag de todos modos
+      }
+      // --- Fin Análisis Reserva ---
 
       pushHistory(from, 'assistant', reply);
       setState(from, s);
@@ -512,71 +336,58 @@ client.on('message', async (msg) => {
       return;
     }
 
-    // 5. ===== MODO SHOWROOM (VENTAS "STRAIGHT LINE") =====
+
+    // 5. ===== MODO SHOWROOM (VENTAS + CTAs) =====
     if (s.mode === 'cortex') {
-      const yes_post_demo = /^(si|sí|s[ií] me interesa|dale|de una|hágale|hagale|me interesa|listo|me gust[óo]|me sirve|claro|ok|perfecto|brutal)\b/i.test(low);
+      const yes_post_demo = /^(si|sí|s[ií] me interesa|dale|de una|h[áa]gale|me interesa|listo|me gust[óo]|me sirve|claro|ok|perfecto|brutal)\b/i.test(low);
 
-      // Flujo de ventas post-demo
-      if (s.sales.awaiting === 'confirm' && yes_post_demo) {
-        s.sales.awaiting = 'schedule';
-        s.sales.lastOffer = 'call';
+      // --- Flujo Post-Demo Mejorado ---
+      if (s.sales.awaiting === 'confirm') {
+        if (yes_post_demo) {
+          s.sales.awaiting = 'schedule'; s.sales.lastOffer = 'call';
+          const reply = 'Perfecto 🔥. Ese es el poder de no perder clientes. Te agendo con el equipo para personalizar tu asistente. ¿Tu nombre y tipo de negocio? 🚀';
+          pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
+        } else {
+          // Si no dice que sí, pero venía de la demo, no resaluda
+          s.sales.awaiting = null; // Sale del estado "esperando confirmación post-demo"
+          const reply = `Entendido. ¿Prefieres entonces que te lo deje listo en tu WhatsApp o primero una llamada corta para aclarar dudas?`;
+          pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
+        }
+      }
+      // --- Fin Flujo Post-Demo ---
 
-        const reply = 'Perfecto 🔥. Ese es el poder de no volver a perder un cliente. Te puedo agendar con uno de los chicos del equipo de Cortex para personalizar tu asistente. Solo confírmame tu nombre y tipo de negocio, y te mandamos la propuesta enseguida 🚀';
 
-        pushHistory(from, 'assistant', reply);
-        setState(from, s);
-        await msg.reply(reply);
-        return;
+      // --- Flujo de Ventas Normal (con IA y CTAs) ---
+      const messages = [ { role: 'system', content: PROMPT_VENTAS }, ...s.history.slice(-MAX_TURNS) ];
+
+      // Usa safeChatCall con retry
+      const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 250 });
+      let reply = completion.choices?.[0]?.message?.content?.trim() || '¿En qué más te puedo ayudar? 🙂';
+
+      // Añadir CTA aleatorio si no es una respuesta directa a demo o cierre
+      const isAskingForDemo = /demo|muestr|probar|prueba|\/start test/i.test(low);
+      const isClosing = /nombre|negocio|agendar|llamada/i.test(low);
+      if (!isAskingForDemo && !isClosing && s.sales.awaiting !== 'schedule') {
+          if (Math.random() < 0.6) { // 60% de probabilidad de añadir CTA
+              reply += `\n\n${pick(CTAs)}`;
+          }
       }
 
-      // Flujo de ventas normal (con LLM)
-      const messages = [
-        { role: 'system', content: PROMPT_VENTAS },
-        ...s.history.slice(-MAX_TURNS),
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages,
-        max_tokens: 250
-      });
-      const reply = completion.choices?.[0]?.message?.content?.trim() || '🙂';
-
-      if (/demo|muestr(a|e)|probar|prueba|/i.test(low)) {
-        s.sales.lastOffer = 'demo';
-        s.sales.awaiting = 'confirm';
-      }
+      // Actualizar estado de ventas si pide demo
+      if (isAskingForDemo) { s.sales.lastOffer = 'demo'; s.sales.awaiting = 'confirm'; }
 
       pushHistory(from, 'assistant', reply);
       setState(from, s);
       await msg.reply(reply);
       return;
+      // --- Fin Flujo Ventas Normal ---
     }
 
   } catch (error) {
-    // *** LÍNEA MODIFICADA: Muestra el error completo ***
     console.error('****** ¡ERROR DETECTADO! ******\n', error, '\n*******************************');
-
-    // Try to reply to the user if possible (sin cambiar esta parte)
-    if (msg && typeof msg.reply === 'function') {
-        try {
-            await msg.reply('Ups, algo salió mal procesando tu mensaje. Por favor, inténtalo de nuevo.');
-        } catch (replyError) {
-            console.error('Error al intentar enviar mensaje de error al usuario:', replyError);
-        }
-    } else {
-        console.error('No se pudo enviar mensaje de error al usuario (objeto msg inválido).');
-    }
+    if (msg && typeof msg.reply === 'function') { try { await msg.reply('Ups, algo salió mal. Inténtalo de nuevo.'); } catch (replyError) { console.error('Error al enviar mensaje de error:', replyError); } } else { console.error('No se pudo enviar mensaje de error (msg inválido).'); }
   }
 });
 
-// Catch unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  // Application specific logging, throwing an error, or other logic here
-});
-
-client.initialize().catch(err => {
-    console.error("ERROR AL INICIALIZAR EL CLIENTE:", err);
-});
-
+process.on('unhandledRejection', (reason, promise) => { console.error('Unhandled Rejection:', reason); });
+client.initialize().catch(err => { console.error("ERROR AL INICIALIZAR CLIENTE:", err); });
