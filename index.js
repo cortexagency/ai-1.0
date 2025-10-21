@@ -5,7 +5,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const { DateTime } = require('luxon');
@@ -301,9 +301,13 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
-  console.log('\nEscanea este QR (WhatsApp → Dispositivos vinculados → Vincular):\n');
-  qrcode.generate(qr, { small: true });
-});
+  console.log('\nEscanea este QR (WhatsApp → Dispositivos vinculados → Vincular):\n');
+  // Esta nueva función dibuja el QR de forma diferente
+  qrcode.toString(qr, { type: 'terminal', small: true }, (err, url) => {
+    if (err) throw err;
+    console.log(url);
+  });
+});;
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
 
 // ======== HANDLER MENSAJES ========
