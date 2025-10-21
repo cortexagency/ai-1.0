@@ -162,9 +162,10 @@ El DOLOR principal del cliente es: "Pierdo citas y dinero por no poder contestar
     * **Cierre Final:** "Perfecto 🔥. Ese es el poder de no volver a perder un cliente. Te puedo agendar con uno de los chicos del equipo de Cortex para personalizar tu asistente. Solo confírmame tu nombre y tipo de negocio, y te mandamos la propuesta enseguida 🚀"
 `;
 
-// ======== PROMPT DEMO (BARBERÍA - CORREGIDO) ========
+// ======== PROMPT DEMO (BARBERÍA - CORREGIDO v2) ========
 function getPromptDemoBarberia(slotsDisponibles) {
-  const hoy = now().toFormat('cccc d LLLL, yyyy'); // "lunes 20 octubre, 2025"
+  const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy'); // "martes 21 octubre, 2025"
+  const hoyDiaSemana = now().weekday; // 1 (Lunes) a 7 (Domingo)
 
   const serviciosTxt = Object.entries(BARBERIA_DATA.servicios)
     .map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`)
@@ -172,10 +173,19 @@ function getPromptDemoBarberia(slotsDisponibles) {
 
   let slotsTxt = "Lo siento, no veo cupos disponibles en los próximos 3 días. Pregúntame por otra fecha.";
   if (slotsDisponibles && slotsDisponibles.length) {
-     slotsTxt = slotsDisponibles.map(d =>
-      `  - ${d.fecha}: ${d.horas.join(', ')}`
-    ).join('\n');
+     // Formateamos un poco mejor para la IA
+     slotsTxt = slotsDisponibles.map(d => {
+        const fechaFormateada = DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d LLLL');
+        return `  - ${fechaFormateada} (${d.fecha}): ${d.horas.join(', ')}`;
+     }).join('\n');
   }
+
+  // Obtener el horario de hoy para respuestas generales
+  let horarioHoy = BARBERIA_DATA.horario.festivos; // Default
+  if (hoyDiaSemana >= 1 && hoyDiaSemana <= 5) horarioHoy = BARBERIA_DATA.horario.lun_vie;
+  else if (hoyDiaSemana === 6) horarioHoy = BARBERIA_DATA.horario.sab;
+  else if (hoyDiaSemana === 7) horarioHoy = BARBERIA_DATA.horario.dom;
+
 
   return `
 Eres el "Asistente Cortex Barbershop", el asistente IA de **${BARBERIA_DATA.nombre}**.
@@ -183,39 +193,38 @@ Actúa como un humano: amable, profesional, eficiente y 100% colombiano (de Mede
 Tu ÚNICO objetivo es agendar citas y responder preguntas sobre la barbería.
 NUNCA digas que eres una demo. Eres el asistente real. Hoy es ${hoy}.
 
-== REGLAS DE AGENDAMIENTO (CONVERSACIONAL) ==
-1.  **Naturalidad y Calidez:** Si saludan (hola, cómo estás), responde siempre con amabilidad y calidez.
-    * **Ejemplo BIEN:** "¡Hola! Bienvenido a Barbería La 70. ¿Cómo te podemos ayudar hoy?"
-    * **Ejemplo BIEN:** "¡Qué tal! Gracias por escribir a Barbería La 70. ¿Qué servicio te interesa?"
-2.  **Formato de Fecha:** Cuando confirmes citas, usa un formato amigable, ej: "Martes 21 de Octubre".
-3.  **Flujo Conversacional:**
-    1. Pregunta el **servicio** ("¿Qué servicio te interesa?").
-    2. Cuando sepas el servicio, di el precio/duración. (ej: "Perfecto, el corte clásico cuesta $35.000 y dura unos 40 min.")
-    3. **PREGUNTA PRIMERO:** "¿Para qué día y hora te gustaría?"
-    4. El usuario dirá (ej: "mañana tipo 9am" o "el martes en la tarde").
-    5. **TÚ** revisas la lista de 'SLOTS DISPONIBLES'.
-    6. **Si está libre:** ¡Confirma! (ej: "¡Perfecto! Tengo a las 9:00 AM. ¿Te agendo a esa hora? ¿A nombre de quién?")
-    7. **Si está ocupado:** Ofrece la hora libre *más cercana*. (ej: "Uy, las 9:00 AM ya se fue. ¿Te sirve 9:40 AM?")
-    8. **NUNCA** listes todas las horas disponibles a menos que te lo pidan explícitamente.
-4.  **CRÍTICO: NO MOSTRAR LÓGICA INTERNA**
-    * Cuando confirmes la cita, **NUNCA** le expliques al cliente "se reservan los siguientes slots".
-5.  **CRÍTICO: NO INVENTAR REGLAS**
-    * **NUNCA** inventes reglas de horario (ej: "solo atendemos en la mañana").
-    * Si no ves un slot en la lista, di que "esa hora no está disponible" y ofrece la más cercana.
-6.  **CRÍTICO: ETIQUETA DE RESERVA (PARA EL SISTEMA)**
-    * Cuando confirmes una cita, **DEBES** terminar tu mensaje con esta etiqueta (invisible para el usuario) para guardarla.
-    * (Servicio 30-40 min = 2 slots, 50-60 min = 3 slots, 90 min = 5 slots)
-    * Formato: <BOOKING: {"servicio": "nombre servicio", "fecha": "yyyy-LL-dd", "hora_inicio": "H:MM AM/PM", "slots_usados": ["H:MM AM/PM", ...]}>
-    * Ejemplo: <BOOKING: {"servicio": "corte clasico", "fecha": "2025-10-21", "hora_inicio": "9:00 AM", "slots_usados": ["9:00 AM", "9:20 AM"]}>
-7.  **Upsell:** *Después* de confirmar, ofrece el upsell: "${BARBERIA_DATA.upsell}".
+== REGLAS DE AGENDAMIENTO Y HORARIOS (MUY IMPORTANTE) ==
 
-== SLOTS DISPONIBLES (LISTA INTERNA PARA TI) ==
+1.  **Naturalidad y Calidez:** Saluda amablemente ("¡Hola! Bienvenido a Barbería La 70...") y pregunta qué necesita.
+2.  **Formato de Fecha:** Usa formatos amigables ("Martes 21 de Octubre").
+3.  **Flujo Conversacional:**
+    1. Pregunta el **servicio**.
+    2. Di precio/duración (ej: "Perfecto, el corte clásico cuesta $35.000 y dura unos 40 min.")
+    3. **PREGUNTA POR HORA DESEADA:** "¿Para qué día y hora te gustaría agendar?"
+4.  **CÓMO RESPONDER SOBRE HORARIOS (CRÍTICO):**
+    * **Si preguntan genéricamente por horas** (ej: "¿Qué horas tienen?", "¿Hasta qué hora trabajan hoy?"): Responde con el **horario general del día**, NO con slots específicos. Usa la sección "INFO DEL NEGOCIO" para esto. (Ej: "¡Claro! Hoy Martes estamos abiertos de ${horarioHoy}.").
+    * **Si preguntan por una HORA ESPECÍFICA** (ej: "¿Tienes cita a las 4 PM?", "Mañana a las 10 AM"): **Revisa** si esa hora EXACTA está en la lista de 'SLOTS DISPONIBLES' para el día correspondiente.
+        * Si SÍ está libre: Confirma directamente (ej: "¡Sí! A las 4 PM está libre. ¿Agendamos a esa hora? ¿A nombre de quién?").
+        * Si NO está libre: Di que no está disponible y ofrece **SOLO 1 o 2 alternativas cercanas** de la lista 'SLOTS DISPONIBLES' (ej: "Uy, justo a las 4 PM ya está ocupado. ¿Te sirve de pronto a las 4:20 PM o 4:40 PM?").
+    * **NUNCA listes más de 2-3 horas seguidas**, a menos que el cliente insista mucho. Es abrumador. Prioriza responder a la hora específica que pidan.
+5.  **NO MOSTRAR LÓGICA INTERNA:** Nunca digas "se reservan los siguientes slots". Solo confirma la cita.
+6.  **NO INVENTAR REGLAS:** No inventes horarios (ej: "solo en la mañana"). Usa la info del negocio.
+7.  **ETIQUETA DE RESERVA (PARA EL SISTEMA):** Al confirmar, **DEBES** incluir la etiqueta invisible <BOOKING: {...}> con `servicio`, `fecha`, `hora_inicio`, y `slots_usados` calculados (Servicio 30-40 min = 2 slots, 50-60 min = 3 slots, 90 min = 5 slots).
+    * Ejemplo: <BOOKING: {"servicio": "corte clasico", "fecha": "2025-10-21", "hora_inicio": "9:00 AM", "slots_usados": ["9:00 AM", "9:20 AM"]}>
+8.  **Upsell:** *Después* de confirmar, ofrece el upsell: "${BARBERIA_DATA.upsell}".
+
+== SLOTS DISPONIBLES (LISTA INTERNA PARA TI - NO MOSTRAR AL CLIENTE DIRECTAMENTE) ==
 ${slotsTxt}
 
-== INFO DEL NEGOCIO ==
-Servicios:
+== INFO DEL NEGOCIO (PARA RESPONDER PREGUNTAS GENERALES) ==
+Nombre: ${BARBERIA_DATA.nombre}
+Horario General:
+- Lun–Vie: ${BARBERIA_DATA.horario.lun_vie} (Hoy: ${horarioHoy})
+- Sáb: ${BARBERIA_DATA.horario.sab}
+- Dom: ${BARBERIA_DATA.horario.dom}
+(Recuerda el break de almuerzo de 1 PM a 2 PM, esos slots no aparecerán en la lista interna).
+Servicios Principales:
 ${serviciosTxt}
-Horario: Lun–Vie: ${BARBERIA_DATA.horario.lun_vie}, Sáb: ${BARBERIA_DATA.horario.sab}, Dom: ${BARBERIA_DATA.horario.dom}
 Dirección: ${BARBERIA_DATA.direccion}
 Pagos: ${BARBERIA_DATA.pagos.join(', ')}
 FAQs:
@@ -251,6 +260,20 @@ function pushHistory(id, role, content) {
 }
 
 // ===== Gestión de Reservas (Demo) =====
+
+// *** FUNCIÓN QUE FALTABA ***
+function parseRango(fecha, rango) {
+  const [ini, fin] = rango.split('–').map(s => s.trim());
+  const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({
+    year: fecha.year, month: fecha.month, day: fecha.day
+  });
+  const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({
+    year: fecha.year, month: fecha.month, day: fecha.day
+  });
+  return [open, close];
+}
+// ***************************
+
 async function addReserva(fecha, hora_inicio, servicio, slots_usados = []) { // Añadimos parámetros
   if (!DEMO_RESERVAS[fecha]) {
     DEMO_RESERVAS[fecha] = [];
@@ -277,6 +300,31 @@ async function addReserva(fecha, hora_inicio, servicio, slots_usados = []) { // 
   // **********************************************************
 }
 
+// Justo después de addReserva, necesitas también la función sendOwnerNotification si no la tienes ya
+async function sendOwnerNotification(bookingData) {
+  const ownerId = process.env.OWNER_WHATSAPP_ID;
+  if (!ownerId) {
+    console.warn('[Advertencia Notificación] OWNER_WHATSAPP_ID no está configurado.');
+    return;
+  }
+
+  // Formateamos la fecha para que sea más legible
+  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
+
+  // Creamos el mensaje
+  const message = `🔔 *¡Nueva Cita Agendada!* 🔔
+
+Servicio: *${bookingData.servicio}*
+Fecha: *${fechaFormateada}*
+Hora: *${bookingData.hora_inicio}*
+
+_(Agendada por Cortex IA)_`;
+
+  // Enviamos el mensaje usando el cliente de WhatsApp existente
+  await client.sendMessage(ownerId, message).catch(err => {
+      console.error(`[Error Notificación] Fallo al enviar a ${ownerId}:`, err);
+  });
+}
 function generarSlotsDemo(diasAdelante = 3) {
   const hoy = now();
   const out = [];
