@@ -294,7 +294,7 @@ async function sendOwnerEmailNotification(bookingData, type = 'new') {
     console.log(`[Notificación Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Enviada a ${ownerEmail}. ID: ${info.messageId}`);
   } catch (error) {
     console.error(`[Error Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Fallo al enviar a ${ownerEmail}:`, error);
-    throw error;
+    // Ya no hacemos throw error;
   }
 }
 
