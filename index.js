@@ -477,4 +477,8 @@ process.on('unhandledRejection', (reason, promise) => {
 
 client.initialize().catch(err => {
     console.error("ERROR AL INICIALIZAR EL CLIENTE:", err);
+<<<<<<< HEAD
 });
+=======
+});
+>>>>>>> 0151f6675ad41110b2e4e1f0f21dbd2e3613b9d1
