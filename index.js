@@ -1,11 +1,11 @@
 // =========================
-// CORTEX IA - INDEX.JS (v5 - Con Memoria Persistente y Tono Corregido)
+// CORTEX IA - INDEX.JS (v6 - Final QR Fix + Puppeteer Args)
 // =========================
 require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const qrcode = require('qrcode');
+const qrcode = require('qrcode'); // Correct: require 'qrcode'
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const { DateTime } = require('luxon');
@@ -131,11 +131,11 @@ El DOLOR principal del cliente es: "Pierdo citas y dinero por no poder contestar
 // ======== PROMPT DEMO (BARBERÍA - CORREGIDO) ========
 function getPromptDemoBarberia(slotsDisponibles) {
   const hoy = now().toFormat('cccc d LLLL, yyyy'); // "lunes 20 octubre, 2025"
-  
+
   const serviciosTxt = Object.entries(BARBERIA_DATA.servicios)
     .map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`)
     .join('\n');
-    
+
   let slotsTxt = "Lo siento, no veo cupos disponibles en los próximos 3 días. Pregúntame por otra fecha.";
   if (slotsDisponibles && slotsDisponibles.length) {
      slotsTxt = slotsDisponibles.map(d =>
@@ -150,11 +150,9 @@ Tu ÚNICO objetivo es agendar citas y responder preguntas sobre la barbería.
 NUNCA digas que eres una demo. Eres el asistente real. Hoy es ${hoy}.
 
 == REGLAS DE AGENDAMIENTO (CONVERSACIONAL) ==
-
 1.  **Naturalidad y Calidez:** Si saludan (hola, cómo estás), responde siempre con amabilidad y calidez.
     * **Ejemplo BIEN:** "¡Hola! Bienvenido a Barbería La 70. ¿Cómo te podemos ayudar hoy?"
     * **Ejemplo BIEN:** "¡Qué tal! Gracias por escribir a Barbería La 70. ¿Qué servicio te interesa?"
-    * **Ejemplo MAL (Cortante):** "¡Hola! ¿Listo para un corte?"
 2.  **Formato de Fecha:** Cuando confirmes citas, usa un formato amigable, ej: "Martes 21 de Octubre".
 3.  **Flujo Conversacional:**
     1. Pregunta el **servicio** ("¿Qué servicio te interesa?").
@@ -166,16 +164,14 @@ NUNCA digas que eres una demo. Eres el asistente real. Hoy es ${hoy}.
     7. **Si está ocupado:** Ofrece la hora libre *más cercana*. (ej: "Uy, las 9:00 AM ya se fue. ¿Te sirve 9:40 AM?")
     8. **NUNCA** listes todas las horas disponibles a menos que te lo pidan explícitamente.
 4.  **CRÍTICO: NO MOSTRAR LÓGICA INTERNA**
-    * Cuando confirmes la cita, **NUNCA** le expliques al cliente "se reservan los siguientes slots". Eso es información interna.
-    * **MAL:** "Tu cita está agendada. Se reservan los slots 9:00 AM y 9:20 AM."
-    * **BIEN:** "¡Listo, Andrés! Agendado para tu corte clásico el Martes 21 de Octubre a las 9:00 AM. ¡Te esperamos!"
+    * Cuando confirmes la cita, **NUNCA** le expliques al cliente "se reservan los siguientes slots".
 5.  **CRÍTICO: NO INVENTAR REGLAS**
-    * **NUNCA** inventes reglas de horario (ej: "solo atendemos en la mañana"). El horario completo está en 'INFO DEL NEGOCIO'.
-    * Si no ves un slot en la lista, simplemente di que "esa hora no está disponible" y ofrece la más cercana.
+    * **NUNCA** inventes reglas de horario (ej: "solo atendemos en la mañana").
+    * Si no ves un slot en la lista, di que "esa hora no está disponible" y ofrece la más cercana.
 6.  **CRÍTICO: ETIQUETA DE RESERVA (PARA EL SISTEMA)**
     * Cuando confirmes una cita, **DEBES** terminar tu mensaje con esta etiqueta (invisible para el usuario) para guardarla.
     * (Servicio 30-40 min = 2 slots, 50-60 min = 3 slots, 90 min = 5 slots)
-    * Formato: <BOOKING: {"servicio": "nombre servicio", "fecha": "yyyy-LL-dd", "hora_inicio": "H:MM AM/PM", "slots_usados": ["H:MM AM/PM", "H:MM AM/PM", ...]}>
+    * Formato: <BOOKING: {"servicio": "nombre servicio", "fecha": "yyyy-LL-dd", "hora_inicio": "H:MM AM/PM", "slots_usados": ["H:MM AM/PM", ...]}>
     * Ejemplo: <BOOKING: {"servicio": "corte clasico", "fecha": "2025-10-21", "hora_inicio": "9:00 AM", "slots_usados": ["9:00 AM", "9:20 AM"]}>
 7.  **Upsell:** *Después* de confirmar, ofrece el upsell: "${BARBERIA_DATA.upsell}".
 
@@ -231,7 +227,6 @@ function addReserva(fecha, slots_usados = []) {
       console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`);
     }
   });
-  // *** NUEVO: Guardar en el archivo JSON ***
   saveReservas();
 }
 
@@ -274,17 +269,14 @@ function generarSlotsDemo(diasAdelante = 3) {
       const hh = cursor.toFormat('h:mm a');
       const hora24 = cursor.hour;
 
-      // Comprobar contra las reservas GLOBALES (cargadas del JSON)
       const ocupada = DEMO_RESERVAS[fechaStr] && DEMO_RESERVAS[fechaStr].includes(hh);
-      // Comprobar hora de almuerzo
       const esAlmuerzo = (hora24 >= almuerzo_demo.start && hora24 < almuerzo_demo.end);
 
-      if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) { // Dar 30 min de margen
+      if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) {
         horas.push(hh);
       }
-      // *** CORREGIDO: Aumentado a 20 slots para darle más contexto a la IA ***
       if (horas.length >= 20) break;
-      
+
       cursor = cursor.plus({ minutes: slotMin });
     }
 
@@ -293,26 +285,48 @@ function generarSlotsDemo(diasAdelante = 3) {
   return out;
 }
 
-
 // ======== WHATSAPP CLIENT ========
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
-    args: [
+    args: [                     // Correct Puppeteer arguments for Linux
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage', // Added for limited resource environments
-      '--disable-accelerated-2d-canvas', // Added for stability
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--single-process', // Added for Docker/Linux
-      '--disable-gpu' // Added for stability
+      '--single-process',
+      '--disable-gpu'
     ],
   },
 });
 
+// *** THIS IS THE CORRECT QR CODE BLOCK ***
+client.on('qr', (qr) => {
+  console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n');
+  qrcode.toDataURL(qr, (err, url) => {
+    if (err) {
+      console.error("Error generando QR Data URL:", err);
+      return;
+    }
+    console.log(url); // This will print the data:image/png;base64,... URL
+    console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑');
+  });
+});
+
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
+
+// Enhanced Error Handling for Authentication Failure
+client.on('auth_failure', msg => {
+    console.error('ERROR DE AUTENTICACIÓN:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    console.log('Cliente desconectado:', reason);
+    // Consider adding logic here to attempt reconnection or notify admin
+});
 
 // ======== HANDLER MENSAJES ========
 client.on('message', async (msg) => {
@@ -352,7 +366,7 @@ client.on('message', async (msg) => {
       setState(from, s);
       return msg.reply('¡Demo finalizada! ¿Qué tal te pareció? ¿Viste cómo agendé la cita sin problemas? Si te interesa, te explico cómo dejamos uno igual en tu WhatsApp en 1–2 días.');
     }
-    
+
     // Comando para limpiar reservas (solo para ti, el admin)
     if (/^\/clear\s+reservas\s+demo$/i.test(low)) {
         DEMO_RESERVAS = {};
@@ -372,7 +386,7 @@ client.on('message', async (msg) => {
       ];
 
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini', 
+        model: 'gpt-4o-mini',
         messages,
         max_tokens: 300
       });
@@ -387,7 +401,7 @@ client.on('message', async (msg) => {
 
           reply = reply.replace(/<BOOKING:.*?>/, '').trim(); // Limpiar tag
           console.log(`[Reserva Demo Detectada]`, bookingData);
-          
+
         } catch (e) {
           console.error('Error parseando JSON de booking:', e.message);
         }
@@ -405,11 +419,11 @@ client.on('message', async (msg) => {
 
       // Flujo de ventas post-demo
       if (s.sales.awaiting === 'confirm' && yes_post_demo) {
-        s.sales.awaiting = 'schedule'; 
+        s.sales.awaiting = 'schedule';
         s.sales.lastOffer = 'call';
-        
+
         const reply = 'Perfecto 🔥. Ese es el poder de no volver a perder un cliente. Te puedo agendar con uno de los chicos del equipo de Cortex para personalizar tu asistente. Solo confírmame tu nombre y tipo de negocio, y te mandamos la propuesta enseguida 🚀';
-        
+
         pushHistory(from, 'assistant', reply);
         setState(from, s);
         await msg.reply(reply);
@@ -442,10 +456,25 @@ client.on('message', async (msg) => {
 
   } catch (error) {
     console.error('Ha ocurrido un error en el handler de mensajes:', error);
-    if (msg) {
-      await msg.reply('Ups, algo salió mal. Por favor, inténtalo de nuevo.');
+    // Try to reply to the user if possible
+    if (msg && typeof msg.reply === 'function') {
+        try {
+            await msg.reply('Ups, algo salió mal procesando tu mensaje. Por favor, inténtalo de nuevo.');
+        } catch (replyError) {
+            console.error('Error al intentar enviar mensaje de error al usuario:', replyError);
+        }
+    } else {
+        console.error('No se pudo enviar mensaje de error al usuario (objeto msg inválido).');
     }
   }
 });
 
-client.initialize();
+// Catch unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Application specific logging, throwing an error, or other logic here
+});
+
+client.initialize().catch(err => {
+    console.error("ERROR AL INICIALIZAR EL CLIENTE:", err);
+});
