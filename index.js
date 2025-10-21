@@ -506,8 +506,10 @@ client.on('message', async (msg) => {
     }
 
   } catch (error) {
-    console.error('Ha ocurrido un error en el handler de mensajes:', error);
-    // Try to reply to the user if possible
+    // *** LÍNEA MODIFICADA: Muestra el error completo ***
+    console.error('****** ¡ERROR DETECTADO! ******\n', error, '\n*******************************');
+
+    // Try to reply to the user if possible (sin cambiar esta parte)
     if (msg && typeof msg.reply === 'function') {
         try {
             await msg.reply('Ups, algo salió mal procesando tu mensaje. Por favor, inténtalo de nuevo.');
