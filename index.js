@@ -297,18 +297,21 @@ function generarSlotsDemo(diasAdelante = 3) {
 // ======== WHATSAPP CLIENT ========
 const client = new Client({
   authStrategy: new LocalAuth(),
-  puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] },
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage', // Added for limited resource environments
+      '--disable-accelerated-2d-canvas', // Added for stability
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process', // Added for Docker/Linux
+      '--disable-gpu' // Added for stability
+    ],
+  },
 });
 
-client.on('qr', (qr) => {
-  console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n');
-  // Esta función genera una URL con la imagen del QR
-  qrcode.toDataURL(qr, (err, url) => {
-    if (err) throw err;
-    console.log(url);
-    console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑');
-  });
-});
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
 
 // ======== HANDLER MENSAJES ========
