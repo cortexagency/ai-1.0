@@ -13,5 +13,11 @@ aptPkgs = [
   "libxfixes3",
   "libxcomposite1",
   "libxdamage1",
-  "libxkbcommon0"
+  "libxkbcommon0",
+  # ---- Librerías faltantes añadidas ----
+  "libgobject-2.0-0",
+  "libdrm2",
+  "libx11-xcb1",
+  "libpangocairo-1.0-0",
+  "libcairo2"
 ]
