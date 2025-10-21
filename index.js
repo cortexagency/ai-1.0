@@ -54,6 +54,40 @@ function saveReservas() {
   }
 }
 
+// Guardar reservas en el archivo
+function saveReservas() {
+  // ... (código existente) ...
+}
+
+// *** NUEVA FUNCIÓN PARA NOTIFICAR AL DUEÑO ***
+async function sendOwnerNotification(bookingData) {
+  const ownerId = process.env.OWNER_WHATSAPP_ID;
+  if (!ownerId) {
+    console.warn('[Advertencia Notificación] OWNER_WHATSAPP_ID no está configurado.');
+    return;
+  }
+
+  // Formateamos la fecha para que sea más legible
+  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
+
+  // Creamos el mensaje
+  const message = `🔔 *¡Nueva Cita Agendada!* 🔔
+
+Servicio: *${bookingData.servicio}*
+Fecha: *${fechaFormateada}*
+Hora: *${bookingData.hora_inicio}*
+
+_(Agendada por Cortex IA)_`;
+
+  // Enviamos el mensaje usando el cliente de WhatsApp existente
+  // Usamos .catch() por si hay un error al enviar (ej: número inválido)
+  await client.sendMessage(ownerId, message).catch(err => {
+      console.error(`[Error Notificación] Fallo al enviar a ${ownerId}:`, err);
+      // Podrías añadir lógica aquí para reintentar o marcar el error
+  });
+}
+// ********************************************
+
 // Cargar las reservas al iniciar el script
 loadReservas();
 
@@ -217,28 +251,30 @@ function pushHistory(id, role, content) {
 }
 
 // ===== Gestión de Reservas (Demo) =====
-function addReserva(fecha, slots_usados = []) {
+async function addReserva(fecha, hora_inicio, servicio, slots_usados = []) { // Añadimos parámetros
   if (!DEMO_RESERVAS[fecha]) {
     DEMO_RESERVAS[fecha] = [];
   }
+  let reservaNueva = false; // Bandera para saber si se añadió algo nuevo
   slots_usados.forEach(hora => {
     if (!DEMO_RESERVAS[fecha].includes(hora)) {
       DEMO_RESERVAS[fecha].push(hora);
       console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`);
+      reservaNueva = true; // Marcamos que sí hubo una reserva nueva
     }
   });
-  saveReservas();
-}
+  saveReservas(); // Guardamos en el archivo JSON
 
-function parseRango(fecha, rango) {
-  const [ini, fin] = rango.split('–').map(s => s.trim());
-  const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({
-    year: fecha.year, month: fecha.month, day: fecha.day
-  });
-  const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({
-    year: fecha.year, month: fecha.month, day: fecha.day
-  });
-  return [open, close];
+  // *** NUEVO: Enviar notificación si la reserva es nueva ***
+  if (reservaNueva && process.env.OWNER_WHATSAPP_ID) {
+    try {
+      await sendOwnerNotification({ fecha, hora_inicio, servicio });
+      console.log(`[Notificación] Enviada al dueño por nueva reserva.`);
+    } catch (error) {
+      console.error('[Error Notificación] No se pudo enviar mensaje al dueño:', error);
+    }
+  }
+  // **********************************************************
 }
 
 function generarSlotsDemo(diasAdelante = 3) {
@@ -392,12 +428,25 @@ client.on('message', async (msg) => {
       });
       let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí, ¿qué servicio quieres?';
 
-      // Analizar la respuesta por el <BOOKING>
+     // Analizar la respuesta por el <BOOKING>
       const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
       if (bookingMatch && bookingMatch[1]) {
         try {
           const bookingData = JSON.parse(bookingMatch[1]);
-          addReserva(bookingData.fecha, bookingData.slots_usados || [bookingData.hora_inicio]);
+
+          // *** LÍNEA MODIFICADA ***
+          // Asegurarse de que todos los campos necesarios existan
+          if (bookingData.fecha && bookingData.hora_inicio && bookingData.servicio && bookingData.slots_usados) {
+             await addReserva(
+                bookingData.fecha,
+                bookingData.hora_inicio,
+                bookingData.servicio,
+                bookingData.slots_usados
+             ); // Pasamos todos los datos y usamos await
+          } else {
+             console.error("[Error Booking] Faltan datos en la etiqueta BOOKING:", bookingData);
+          }
+          // ***********************
 
           reply = reply.replace(/<BOOKING:.*?>/, '').trim(); // Limpiar tag
           console.log(`[Reserva Demo Detectada]`, bookingData);
