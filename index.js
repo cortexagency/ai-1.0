@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (v12 - Cancelaciones, Nombre, Email Notifs, Prompts Mejorados)
+// CORTEX IA - INDEX.JS (v13 - Validación Robusta de Estado - COMPLETO)
 // =========================
 require('dotenv').config();
 
@@ -35,21 +35,31 @@ function loadData(filePath, defaultData = {}) {
   try {
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, 'utf8');
-      return JSON.parse(data);
+      // Asegurarse de parsear JSON vacío como objeto vacío
+      return data ? JSON.parse(data) : defaultData;
     } else {
       fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8');
       console.log(`[Memoria] Archivo ${path.basename(filePath)} creado.`);
       return defaultData;
     }
   } catch (e) {
-    console.error(`[Error Memoria] No se pudo cargar ${path.basename(filePath)}:`, e);
+    console.error(`[Error Memoria] No se pudo cargar o parsear ${path.basename(filePath)}:`, e);
+    // Intentar escribir un archivo vacío si falla la carga/parseo para evitar errores futuros
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8');
+        console.warn(`[Memoria] Archivo ${path.basename(filePath)} reseteado debido a error de carga/parseo.`);
+    } catch (writeError) {
+        console.error(`[Error Memoria Fatal] No se pudo escribir/resetear ${path.basename(filePath)}:`, writeError);
+    }
     return defaultData; // Retorna data por defecto en caso de error
   }
 }
 
 function saveData(filePath, data) {
   try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    // Asegurarse de que data no sea undefined
+    const dataToSave = data || {};
+    fs.writeFileSync(filePath, JSON.stringify(dataToSave, null, 2), 'utf8');
     // console.log(`[Memoria] Datos guardados en ${path.basename(filePath)}.`); // Opcional: log en cada guardado
   } catch (e) {
     console.error(`[Error Memoria] No se pudo guardar ${path.basename(filePath)}:`, e);
@@ -80,7 +90,9 @@ loadReservas();
 loadUserBookings();
 
 // ======== DATOS DE LA DEMO (BARBERÍA LA 70) ========
-const BARBERIA_DATA = { /* ... (Mismos datos de antes) ... */ };
+const BARBERIA_DATA = {
+    nombre: "Barbería La 70", direccion: "Calle 70 #45-18, Belén, Medellín (esquina con Cra. 48)", referencia: "Frente al Parque Belén, local 3 (al lado de la panadería El Molino)", telefono: "+57 310 555 1234 (demo)", instagram: "@barberial70 (demo)", horario: { lun_vie: "9:00 AM – 8:00 PM", sab: "9:00 AM – 6:00 PM", dom: "10:00 AM – 4:00 PM", festivos: "Cerrado o solo por cita previa", almuerzo_demo: { start: 13, end: 14 } }, capacidad: { slot_base_min: 20 }, servicios: { 'corte clasico': { precio: 35000, min: 40 }, 'corte + degradado + diseño': { precio: 55000, min: 60 }, 'barba completa': { precio: 28000, min: 30 }, 'corte + barba': { precio: 75000, min: 70 }, 'afeitado tradicional': { precio: 45000, min: 45 }, 'coloracion barba': { precio: 65000, min: 60 }, 'arreglo patillas': { precio: 18000, min: 20 }, 'vip': { precio: 120000, min: 90 } }, pagos: ["Nequi", "Daviplata", "PSE", "Efectivo", "Datáfono (pago en el local)"], faqs: [ { q: "¿Cómo puedo cancelar?", a: "Responde a este chat o llama al +57 310 555 1234. Cancela con 6+ horas para evitar cargo." }, { q: "¿Puedo cambiar la cita?", a: "Sí, reprogramamos si hay disponibilidad y avisas con 6+ horas." }, { q: "¿Aceptan tarjeta?", a: "Sí, datáfono, Nequi/Daviplata y efectivo." }, { q: "¿Tienen estacionamiento?", a: "Sí, 3 cupos en la parte trasera y parqueo público en la 70." } ], upsell: "¿Agregamos barba por $28.000? Queda en $75.000 el combo 😉"
+};
 
 // ======== PROMPT VENTAS (CORTEX IA - v12 Enfoque Humano/Valor) ========
 const PROMPT_VENTAS = `
@@ -106,7 +118,10 @@ Eres Cortex IA, un asistente experto de Cortex Agency. Tu misión es **ayudar** 
     * Si SÍ/ME GUSTÓ/BRUTAL: "¡Excelente! Ese es el objetivo: que recuperes tiempo y no pierdas ni un cliente más. Para empezar a personalizar el tuyo, solo necesito un par de datos. ¿Agendamos una llamada corta mañana o te envío la info por acá?"
     * Si OTRA COSA: "Entendido. No hay problema. ¿Qué dudas te quedaron? ¿O prefieres ver cómo funcionaría con tus propios servicios y horarios en una llamada rápida?" (Sigue explorando, no abandones).
 `;
-const CTAs = [ /* ... (Mismos CTAs) ... */ ];
+const CTAs = [
+  "¿Quieres verlo en acción ahora? Escribe /start test 💈",
+  "¿Agendamos una llamada rápida de 10 min y te explico cómo lo ponemos en tu WhatsApp?",
+];
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 // ======== PROMPT DEMO (BARBERÍA - v4 Pide Nombre + Post-Confirm Rule) ========
@@ -141,335 +156,138 @@ Nombre: ${BARBERIA_DATA.nombre} Horario: Lun-Vie ${BARBERIA_DATA.horario.lun_vie
 
 // ======== Utilidades ========
 function now() { return DateTime.now().setZone(TZ); }
-// --- NLU Ligero ---
-function detectServicio(text) { /* ... (Sin cambios) ... */ }
-function detectHoraExacta(text) { /* ... (Sin cambios) ... */ }
-function detectHoyOMañana(text) { /* ... (Sin cambios) ... */ }
-function detectCancelacion(text) { return /cancelar|cancela|no puedo ir|cambiar cita|reagendar/i.test(text); } // Simple detector
-// --- Cálculo de Slots Usados ---
-function calcularSlotsUsados(horaInicio, durMin) { /* ... (Sin cambios) ... */ }
+function detectServicio(text) { const m = text.toLowerCase(); if (m.includes('vip')) return 'vip'; if (m.includes('degrad')) return 'corte + degradado + diseño'; if (m.includes('barba')) return 'barba completa'; if (m.includes('patilla')) return 'arreglo patillas'; if (m.includes('afeitado')) return 'afeitado tradicional'; if (m.includes('color')) return 'coloracion barba'; if (m.includes('corte')) return 'corte clasico'; return null; }
+function detectHoraExacta(text) { const h = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i); return h ? h[0] : null; }
+function detectHoyOMañana(text) { if (/\bhoy\b/i.test(text)) return 0; if (/\bmañana|manana\b/i.test(text)) return 1; return null; }
+function detectCancelacion(text) { return /cancelar|cancela|no puedo ir|cambiar cita|reagendar/i.test(text); }
+function calcularSlotsUsados(horaInicio, durMin) { const n = Math.ceil(durMin / BARBERIA_DATA.capacidad.slot_base_min); const start = DateTime.fromFormat(horaInicio.toUpperCase(), 'h:mm a', { zone: TZ }); if (!start.isValid) return [horaInicio]; const arr = []; for (let i = 0; i < n; i++) { arr.push(start.plus({ minutes: i * BARBERIA_DATA.capacidad.slot_base_min }).toFormat('h:mm a')); } return arr; }
 
 // ===== Gestión de Estado y Contexto =====
-function ensureState(id) { /* ... (Sin cambios) ... */ }
-function setState(id, s) { state[id] = s; }
-function pushHistory(id, role, content) { /* ... (Sin cambios) ... */ }
+function ensureState(id) {
+  if (!id || typeof id !== 'string') {
+      console.error(`[Error Estado] Se intentó obtener estado con ID inválido: ${id}`);
+      return { botEnabled: false, mode: 'cortex', history: [], sales: { lastOffer: null, awaiting: null }, ctx: { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null } };
+  }
+  if (!state[id]) {
+    state[id] = { botEnabled: true, mode: 'cortex', history: [], sales: { lastOffer: null, awaiting: null }, ctx: { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null } };
+    console.log(`[Estado] Nuevo estado creado para ${id}`);
+  }
+  if (state[id].botEnabled === undefined) state[id].botEnabled = true;
+  if (!state[id].mode) state[id].mode = 'cortex';
+  if (!state[id].history) state[id].history = [];
+  if (!state[id].sales) state[id].sales = { lastOffer: null, awaiting: null };
+  if (!state[id].ctx) state[id].ctx = { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null };
+  if (state[id].ctx.bookingToCancel === undefined) state[id].ctx.bookingToCancel = null; // Ensure bookingToCancel always exists
+
+  return state[id];
+}
+function setState(id, s) { if (!id || typeof id !== 'string') { console.error(`[Error Estado] Se intentó guardar estado con ID inválido: ${id}`); return; } state[id] = s; }
+function pushHistory(id, role, content) { if (!id || typeof id !== 'string') { console.error(`[Error Historial] Se intentó añadir historial con ID inválido: ${id}`); return; } const s = ensureState(id); if (!s) { console.error(`[Error Historial] ensureState devolvió inválido para ${id}.`); return; } s.history.push({ role, content, at: Date.now() }); while (s.history.length > MAX_TURNS) s.history.shift(); }
 
 // ===== Gestión de Reservas y Notificaciones =====
-function parseRango(fecha, rango) { /* ... (Sin cambios) ... */ }
-
-// *** NUEVO: Generar ID único para reservas ***
+function parseRango(fecha, rango) { const [ini, fin] = rango.split('–').map(s => s.trim()); const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); return [open, close]; }
 function generateBookingId() { return Math.random().toString(36).substring(2, 9); }
-
-// *** MODIFICADO: addReserva ahora guarda en USER_BOOKINGS también ***
-async function addReserva(userId, fecha, hora_inicio, servicio, slots_usados = [], nombreCliente = "Cliente") {
-  if (!DEMO_RESERVAS[fecha]) DEMO_RESERVAS[fecha] = [];
-  let reservaNueva = false;
-  let possibleConflict = false;
-
-  // Verificar si algún slot ya está ocupado
-  slots_usados.forEach(hora => {
-      if (DEMO_RESERVAS[fecha].includes(hora)) {
-          possibleConflict = true;
-      }
-  });
-
-  if (possibleConflict) {
-      console.warn(`[Advertencia Reserva] Conflicto detectado al intentar reservar ${servicio} a las ${hora_inicio} en ${fecha}. Slots: ${slots_usados.join(', ')}`);
-      // Podríamos decidir no guardar o manejar el conflicto de otra manera
-      // Por ahora, lo guardaremos pero marcaremos que no es "nueva" para no notificar duplicado
-      reservaNueva = false;
-  } else {
-      slots_usados.forEach(hora => {
-          DEMO_RESERVAS[fecha].push(hora);
-          console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`);
-      });
-      reservaNueva = true;
-  }
-
-  saveReservas(); // Guardar slots ocupados
-
-  // Guardar la reserva del usuario si es nueva y no hay conflicto
-  if (reservaNueva) {
-    if (!USER_BOOKINGS[userId]) USER_BOOKINGS[userId] = [];
-    const bookingId = generateBookingId();
-    const newBooking = { id: bookingId, fecha, hora_inicio, servicio, slots_usados, nombreCliente };
-    USER_BOOKINGS[userId].push(newBooking);
-    saveUserBookings(); // Guardar la reserva específica del usuario
-    console.log(`[User Booking] Reserva guardada para ${userId}:`, newBooking);
-
-    // Enviar notificaciones solo si es realmente nueva
-    const notificationData = { ...newBooking }; // Enviar copia
-
-    if (BOT_CONFIG.ownerWhatsappId) {
-      try { await sendOwnerNotification(notificationData, 'new'); }
-      catch (error) { console.error('[Error Notificación WhatsApp] No se pudo enviar:', error); }
-    }
-    if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-       try { await sendOwnerEmailNotification(notificationData, 'new'); }
-       catch (error) { console.error('[Error Notificación Email] Fallo general al intentar enviar email.'); }
-    }
-  }
-  return reservaNueva; // Devuelve true si se guardó una reserva nueva
-}
-
-// *** NUEVO: removeReserva para cancelaciones ***
-async function removeReserva(userId, bookingId) {
-    if (!USER_BOOKINGS[userId]) return false; // Usuario no tiene reservas
-
-    const bookingIndex = USER_BOOKINGS[userId].findIndex(b => b.id === bookingId);
-    if (bookingIndex === -1) return false; // Reserva no encontrada
-
-    const bookingToRemove = USER_BOOKINGS[userId][bookingIndex];
-    const { fecha, slots_usados } = bookingToRemove;
-
-    // Liberar slots en DEMO_RESERVAS
-    if (DEMO_RESERVAS[fecha]) {
-        DEMO_RESERVAS[fecha] = DEMO_RESERVAS[fecha].filter(slot => !slots_usados.includes(slot));
-        if (DEMO_RESERVAS[fecha].length === 0) delete DEMO_RESERVAS[fecha]; // Limpiar si el día queda vacío
-        saveReservas();
-        console.log(`[Reserva Demo] Slots liberados para ${fecha}: ${slots_usados.join(', ')}`);
-    }
-
-    // Eliminar reserva del usuario
-    USER_BOOKINGS[userId].splice(bookingIndex, 1);
-    if (USER_BOOKINGS[userId].length === 0) delete USER_BOOKINGS[userId]; // Limpiar si el usuario queda sin reservas
-    saveUserBookings();
-    console.log(`[User Booking] Reserva ${bookingId} eliminada para ${userId}`);
-
-    // Notificar al dueño sobre la cancelación
-    const notificationData = { ...bookingToRemove }; // Enviar copia
-
-    if (BOT_CONFIG.ownerWhatsappId) {
-      try { await sendOwnerNotification(notificationData, 'cancelled'); }
-      catch (error) { console.error('[Error Notificación Cancelación WhatsApp] No se pudo enviar:', error); }
-    }
-    if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-       try { await sendOwnerEmailNotification(notificationData, 'cancelled'); }
-       catch (error) { console.error('[Error Notificación Cancelación Email] Fallo general al intentar enviar email.'); }
-    }
-
-    return true; // Cancelación exitosa
-}
-
-
-// *** MODIFICADO: Notificaciones ahora incluyen nombre y tipo (nueva/cancelada) ***
-async function sendOwnerNotification(bookingData, type = 'new') {
-  const ownerId = BOT_CONFIG.ownerWhatsappId;
-  if (!ownerId) { /* ... (warning) ... */ return; }
-  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
-  let message;
-  if (type === 'new') {
-      message = `🔔 *¡Nueva Cita Agendada!* 🔔\n\nCliente: *${bookingData.nombreCliente || 'No especificado'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fechaFormateada}*\nHora: *${bookingData.hora_inicio}*\n\n_(Agendada por Cortex IA)_`;
-  } else if (type === 'cancelled') {
-      message = `❌ *¡Cita Cancelada!* ❌\n\nCliente: *${bookingData.nombreCliente || 'No especificado'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fechaFormateada}*\nHora: *${bookingData.hora_inicio}*\n\n_(Cancelada a través de Cortex IA)_`;
-  } else {
-      return; // Tipo no reconocido
-  }
-  await client.sendMessage(ownerId, message).catch(err => { console.error(`[Error Notificación WhatsApp] Fallo al enviar a ${ownerId}:`, err); });
-}
-
-async function sendOwnerEmailNotification(bookingData, type = 'new') {
-  const ownerEmail = BOT_CONFIG.ownerEmail;
-  const senderEmail = process.env.GMAIL_USER;
-  const senderPassword = process.env.GMAIL_APP_PASSWORD;
-  if (!ownerEmail || !senderEmail || !senderPassword) { /* ... (warnings/errors) ... */ return; }
-
-  let transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: senderEmail, pass: senderPassword }, connectionTimeout: 10000 });
-  const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
-  let subject;
-  let body;
-
-  if (type === 'new') {
-      subject = `Nueva Cita Agendada: ${bookingData.servicio} - ${fechaFormateada}`;
-      body = `<h2>🔔 ¡Nueva Cita Agendada! 🔔</h2><p>Cliente: <strong>${bookingData.nombreCliente || 'No especificado'}</strong></p><ul><li><strong>Servicio:</strong> ${bookingData.servicio}</li><li><strong>Fecha:</strong> ${fechaFormateada}</li><li><strong>Hora:</strong> ${bookingData.hora_inicio}</li></ul><hr><p><em>Agendada por Cortex IA.</em></p>`;
-  } else if (type === 'cancelled') {
-      subject = `Cita Cancelada: ${bookingData.servicio} - ${fechaFormateada}`;
-      body = `<h2>❌ ¡Cita Cancelada! ❌</h2><p>Cliente: <strong>${bookingData.nombreCliente || 'No especificado'}</strong></p><ul><li><strong>Servicio:</strong> ${bookingData.servicio}</li><li><strong>Fecha:</strong> ${fechaFormateada}</li><li><strong>Hora:</strong> ${bookingData.hora_inicio}</li></ul><hr><p><em>Cancelada a través de Cortex IA.</em></p>`;
-  } else {
-      return; // Tipo no reconocido
-  }
-
-  try {
-    let info = await transporter.sendMail({ from: `"Cortex IA Notificaciones" <${senderEmail}>`, to: ownerEmail, subject: subject, html: body });
-    console.log(`[Notificación Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Enviada a ${ownerEmail}. ID: ${info.messageId}`);
-  } catch (error) {
-    console.error(`[Error Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Fallo al enviar a ${ownerEmail}:`, error);
-    // Ya no hacemos throw error;
-  }
-}
-
-function generarSlotsDemo(diasAdelante = 3) { /* ... (Sin cambios) ... */ }
+async function addReserva(userId, fecha, hora_inicio, servicio, slots_usados = [], nombreCliente = "Cliente") { if (!DEMO_RESERVAS[fecha]) DEMO_RESERVAS[fecha] = []; let reservaNueva = false; let possibleConflict = false; slots_usados.forEach(hora => { if (DEMO_RESERVAS[fecha].includes(hora)) { possibleConflict = true; } }); if (possibleConflict) { console.warn(`[Advertencia Reserva] Conflicto detectado para ${servicio} a las ${hora_inicio} en ${fecha}. Slots: ${slots_usados.join(', ')}`); reservaNueva = false; } else { slots_usados.forEach(hora => { DEMO_RESERVAS[fecha].push(hora); console.log(`[Reserva Demo] Slot Ocupado: ${fecha} @ ${hora}`); }); reservaNueva = true; } saveReservas(); if (reservaNueva) { if (!USER_BOOKINGS[userId]) USER_BOOKINGS[userId] = []; const bookingId = generateBookingId(); const newBooking = { id: bookingId, fecha, hora_inicio, servicio, slots_usados, nombreCliente }; USER_BOOKINGS[userId].push(newBooking); saveUserBookings(); console.log(`[User Booking] Reserva guardada para ${userId}:`, newBooking); const notificationData = { ...newBooking }; if (BOT_CONFIG.ownerWhatsappId) { try { await sendOwnerNotification(notificationData, 'new'); } catch (error) { console.error('[Error Notificación WhatsApp] No se pudo enviar:', error); } } if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) { try { await sendOwnerEmailNotification(notificationData, 'new'); } catch (error) { console.error('[Error Notificación Email] Fallo general al intentar enviar email.'); } } } return reservaNueva; }
+async function removeReserva(userId, bookingId) { if (!USER_BOOKINGS[userId]) return false; const bookingIndex = USER_BOOKINGS[userId].findIndex(b => b.id === bookingId); if (bookingIndex === -1) return false; const bookingToRemove = USER_BOOKINGS[userId][bookingIndex]; const { fecha, slots_usados } = bookingToRemove; if (DEMO_RESERVAS[fecha]) { DEMO_RESERVAS[fecha] = DEMO_RESERVAS[fecha].filter(slot => !slots_usados.includes(slot)); if (DEMO_RESERVAS[fecha].length === 0) delete DEMO_RESERVAS[fecha]; saveReservas(); console.log(`[Reserva Demo] Slots liberados para ${fecha}: ${slots_usados.join(', ')}`); } USER_BOOKINGS[userId].splice(bookingIndex, 1); if (USER_BOOKINGS[userId].length === 0) delete USER_BOOKINGS[userId]; saveUserBookings(); console.log(`[User Booking] Reserva ${bookingId} eliminada para ${userId}`); const notificationData = { ...bookingToRemove }; if (BOT_CONFIG.ownerWhatsappId) { try { await sendOwnerNotification(notificationData, 'cancelled'); } catch (error) { console.error('[Error Notificación Cancelación WhatsApp] No se pudo enviar:', error); } } if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) { try { await sendOwnerEmailNotification(notificationData, 'cancelled'); } catch (error) { console.error('[Error Notificación Cancelación Email] Fallo general al intentar enviar email.'); } } return true; }
+async function sendOwnerNotification(bookingData, type = 'new') { const ownerId = BOT_CONFIG.ownerWhatsappId; if (!ownerId) { console.warn('[Advertencia Notificación WhatsApp] ownerWhatsappId no configurado.'); return; } const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL'); let message; if (type === 'new') { message = `🔔 *¡Nueva Cita Agendada!* 🔔\n\nCliente: *${bookingData.nombreCliente || 'No especificado'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fechaFormateada}*\nHora: *${bookingData.hora_inicio}*\n\n_(Agendada por Cortex IA)_`; } else if (type === 'cancelled') { message = `❌ *¡Cita Cancelada!* ❌\n\nCliente: *${bookingData.nombreCliente || 'No especificado'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fechaFormateada}*\nHora: *${bookingData.hora_inicio}*\n\n_(Cancelada a través de Cortex IA)_`; } else { return; } await client.sendMessage(ownerId, message).catch(err => { console.error(`[Error Notificación WhatsApp] Fallo al enviar a ${ownerId}:`, err); }); }
+async function sendOwnerEmailNotification(bookingData, type = 'new') { const ownerEmail = BOT_CONFIG.ownerEmail; const senderEmail = process.env.GMAIL_USER; const senderPassword = process.env.GMAIL_APP_PASSWORD; if (!ownerEmail) { console.warn('[Advertencia Email] ownerEmail no está configurado.'); return; } if (!senderEmail || !senderPassword) { console.error('[Error Email] GMAIL_USER o GMAIL_APP_PASSWORD no están configurados en Railway.'); return; } let transporter = nodemailer.createTransport({ host: 'smtp.gmail.com', port: 465, secure: true, auth: { user: senderEmail, pass: senderPassword }, connectionTimeout: 15000, // Aumentado a 15 segundos socketTimeout: 15000 }); const fechaFormateada = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL'); let subject; let body; if (type === 'new') { subject = `Nueva Cita Agendada: ${bookingData.servicio} - ${fechaFormateada}`; body = `<h2>🔔 ¡Nueva Cita Agendada! 🔔</h2><p>Cliente: <strong>${bookingData.nombreCliente || 'No especificado'}</strong></p><ul><li><strong>Servicio:</strong> ${bookingData.servicio}</li><li><strong>Fecha:</strong> ${fechaFormateada}</li><li><strong>Hora:</strong> ${bookingData.hora_inicio}</li></ul><hr><p><em>Agendada por Cortex IA.</em></p>`; } else if (type === 'cancelled') { subject = `Cita Cancelada: ${bookingData.servicio} - ${fechaFormateada}`; body = `<h2>❌ ¡Cita Cancelada! ❌</h2><p>Cliente: <strong>${bookingData.nombreCliente || 'No especificado'}</strong></p><ul><li><strong>Servicio:</strong> ${bookingData.servicio}</li><li><strong>Fecha:</strong> ${fechaFormateada}</li><li><strong>Hora:</strong> ${bookingData.hora_inicio}</li></ul><hr><p><em>Cancelada a través de Cortex IA.</em></p>`; } else { return; } try { let info = await transporter.sendMail({ from: `"Cortex IA Notificaciones" <${senderEmail}>`, to: ownerEmail, subject: subject, html: body }); console.log(`[Notificación Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Enviada a ${ownerEmail}. ID: ${info.messageId}`); } catch (error) { console.error(`[Error Email ${type === 'new' ? 'Nueva' : 'Cancelada'}] Fallo al enviar a ${ownerEmail}:`, error); /* No hacemos throw */ } }
+function generarSlotsDemo(diasAdelante = 3) { const hoy = now(); const out = []; const slotMin = BARBERIA_DATA.capacidad.slot_base_min; const { almuerzo_demo } = BARBERIA_DATA.horario; for (let d = 0; d < diasAdelante; d++) { const fecha = hoy.plus({ days: d }); const fechaStr = fecha.toFormat('yyyy-LL-dd'); const wd = fecha.weekday; let open, close; if (wd >= 1 && wd <= 5) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.lun_vie); else if (wd === 6) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.sab); else [open, close] = parseRango(fecha, BARBERIA_DATA.horario.dom); let cursor = open; if (d === 0 && hoy > open) { const minsSinceOpen = hoy.diff(open, 'minutes').minutes; const nextSlot = Math.ceil(minsSinceOpen / slotMin) * slotMin; cursor = open.plus({ minutes: nextSlot }); } const horas = []; while (cursor < close) { const hh = cursor.toFormat('h:mm a'); const hora24 = cursor.hour; const ocupada = DEMO_RESERVAS[fechaStr] && DEMO_RESERVAS[fechaStr].includes(hh); const esAlmuerzo = (hora24 >= almuerzo_demo.start && hora24 < almuerzo_demo.end); if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) { horas.push(hh); } if (horas.length >= 20) break; cursor = cursor.plus({ minutes: slotMin }); } if (horas.length) out.push({ fecha: fechaStr, horas }); } return out; }
 
 // ======== WHATSAPP CLIENT ========
 const client = new Client({
-  authStrategy: new LocalAuth({
-      dataPath: path.join(__dirname, 'data', 'session')
-  }),
-  puppeteer: {
-    headless: true,
-    // *** AÑADIR RUTA EXPLÍCITA AL CHROMIUM INSTALADO ***
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      // '--single-process', // Mantenlo comentado por ahora
-      '--disable-gpu',
-      '--disable-extensions'
-    ],
-  },
+    authStrategy: new LocalAuth({ dataPath: path.join(__dirname, 'data', 'session') }),
+    puppeteer: {
+        headless: true,
+        // executablePath: '/usr/bin/chromium', // Mantener comentado
+        args: [ '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--disable-gpu', '--disable-extensions' ],
+    },
+    qrTimeout: 0,
+    authTimeout: 0,
 });
+client.on('qr', (qr) => { console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n'); qrcode.toDataURL(qr, (err, url) => { if (err) { console.error("Error generando QR Data URL:", err); return; } console.log(url); console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑'); }); });
+client.on('ready', () => console.log('✅ Cortex IA listo!'));
+client.on('auth_failure', msg => { console.error('ERROR DE AUTENTICACIÓN:', msg); });
+client.on('disconnected', (reason) => { console.log('Cliente desconectado:', reason); });
 
 // ======== LLAMADA SEGURA A OPENAI (CON RETRY) ========
-async function safeChatCall(payload, tries = 2) { /* ... (Sin cambios) ... */ }
+async function safeChatCall(payload, tries = 2) { for (let i = 0; i < tries; i++) { try { return await openai.chat.completions.create(payload); } catch (e) { console.error(`[Error OpenAI] Intento ${i + 1} fallido:`, e.message); if (i === tries - 1) throw e; await new Promise(r => setTimeout(r, 700)); } } }
 
 // ======== HANDLER MENSAJES ========
 client.on('message', async (msg) => {
+  // *** VALIDACIÓN INICIAL ***
+  if (!msg || !msg.from || typeof msg.from !== 'string') { console.warn('[Advertencia Handler] Mensaje inválido:', msg); return; }
+
   try {
-    const from = msg.from; // ID del usuario: numero@c.us
+    const from = msg.from;
     const text = (msg.body || '').trim();
     const low = text.toLowerCase();
 
+    // *** VALIDACIÓN DE ESTADO INMEDIATA ***
     const s = ensureState(from);
+    if (!s || typeof s !== 'object') { console.error(`[Error Fatal Estado] ensureState inválido para ${from}:`, s); return; }
+
     pushHistory(from, 'user', text);
 
     // --- Comandos Administrativos ---
-    if (low.startsWith('/set owner ')) { /* ... (Lógica corregida de antes) ... */ }
-    if (low.startsWith('/set email ')) { /* ... (Lógica de antes) ... */ }
-    if (low === '/clear reservas demo') { /* ... (Lógica de antes) ... */ }
+    if (low.startsWith('/set owner ')) { if (BOT_CONFIG.ownerWhatsappId && from !== BOT_CONFIG.ownerWhatsappId) { return msg.reply('🔒 Solo el dueño actual puede cambiar este número.'); } const newOwner = low.split(' ')[2]?.trim(); if (newOwner && /^\d+@c\.us$/.test(newOwner)) { const oldOwner = BOT_CONFIG.ownerWhatsappId; BOT_CONFIG.ownerWhatsappId = newOwner; saveConfig(); if (!oldOwner) { console.log(`[Config] Dueño inicial establecido a: ${newOwner}`); return msg.reply(`✅ ¡Perfecto! Ahora eres el dueño. Las notificaciones de WhatsApp llegarán a este número.`); } else { console.log(`[Config] Dueño WhatsApp cambiado de ${oldOwner} a ${newOwner} por ${from}`); return msg.reply(`✅ Número de dueño (WhatsApp) actualizado a: ${newOwner}`); } } else { return msg.reply('❌ Formato inválido. Usa: /set owner numero@c.us'); } }
+    if (low.startsWith('/set email ')) { if (!BOT_CONFIG.ownerWhatsappId || from !== BOT_CONFIG.ownerWhatsappId) { return msg.reply('🔒 Debes ser el dueño configurado (/set owner) para cambiar el email.'); } const newEmail = low.split(' ')[2]?.trim(); if (newEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) { const oldEmail = BOT_CONFIG.ownerEmail; BOT_CONFIG.ownerEmail = newEmail; saveConfig(); console.log(`[Config] Email de notificación cambiado a ${newEmail} por ${from}`); if (!oldEmail) { return msg.reply(`✅ Email de notificaciones configurado: ${newEmail}`); } else { return msg.reply(`✅ Email de notificaciones actualizado a: ${newEmail}`); } } else { return msg.reply('❌ Formato de email inválido. Usa: /set email tu@correo.com'); } }
+    if (low === '/clear reservas demo') { if (from === BOT_CONFIG.ownerWhatsappId) { DEMO_RESERVAS = {}; saveReservas(); USER_BOOKINGS = {}; saveUserBookings(); console.log('[Memoria] Reservas de demo y usuarios limpiadas por el admin.'); return msg.reply('🧹 Reservas de la demo (slots y usuarios) limpiadas.'); } else { console.log(`[Comando Ignorado] Intento de /clear reservas por ${from} (no es dueño).`); } }
     // --- Fin Comandos Admin ---
 
     // 2. BOT ON/OFF
-    if (low === '/bot off') { /* ... (Lógica de antes) ... */ }
-    if (low === '/bot on') { /* ... (Lógica de antes) ... */ }
-    if (!s.botEnabled) return;
+    if (low === '/bot off') { s.botEnabled = false; setState(from, s); return msg.reply('👌 Quedas tú al mando. Escribe /bot on para reactivarme.'); }
+    if (low === '/bot on') { s.botEnabled = true; setState(from, s); return msg.reply('💪 ¡Listo! Vuelvo a ayudarte 24/7.'); }
+    // *** VALIDACIÓN FINAL ANTES DE USAR s.botEnabled ***
+    if (s.botEnabled === undefined || s.botEnabled === null) { console.error(`[Error Fatal Estado] s.botEnabled inválido para ${from}.`); s.botEnabled = true; setState(from, s); }
+    if (!s.botEnabled) { /* console.log(`[Handler] Bot deshabilitado para ${from}, ignorando.`); */ return; }
+
 
     // 3. TEST DEMO on/off
-    if (low === '/start test') { /* ... (Lógica de antes) ... */ }
-    if (low === '/end test') { /* ... (Lógica de antes) ... */ }
+    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null }; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre}* 💈 (Demo Activada)\nEscríbeme como cliente (ej: "corte", "¿tienen hora hoy?").`); }
+    if (low === '/end test') { s.mode = 'cortex'; s.history = []; s.sales.awaiting = 'confirm'; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? ¿Viste cómo agendé? Si te interesa, te explico cómo lo dejamos en tu WhatsApp en 1–2 días.'); }
 
     // 4. ===== MODO DEMO: BARBERÍA =====
     if (s.mode === 'barberia') {
-      const isCancellation = detectCancelacion(text);
-
-      // --- Manejo de Cancelación ---
-      if (isCancellation) {
-          const userBookings = USER_BOOKINGS[from] || [];
-          if (userBookings.length === 0) {
-              const reply = "Parece que no tienes ninguna cita agendada conmigo para cancelar. ¿Necesitas algo más?";
-              pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
-          } else if (userBookings.length === 1) {
-              // Si solo tiene una, confirma y cancela
-              const booking = userBookings[0];
-              const fechaFmt = DateTime.fromISO(booking.fecha).setLocale('es').toFormat('cccc d');
-              // Pregunta para confirmar, incluye el ID en el contexto para la IA
-              const reply = `Ok, veo tu cita para *${booking.servicio}* el *${fechaFmt} a las ${booking.hora_inicio}*. ¿Confirmas que quieres cancelarla? (Responde SÍ o NO)`;
-              // Podríamos añadir lógica más robusta aquí o dejar que la IA maneje la confirmación
-              // Por simplicidad, pasamos el ID a la IA para que lo use en la etiqueta <CANCELLED>
-              s.ctx.bookingToCancel = booking.id; // Guardar ID en contexto
-              setState(from, s);
-              pushHistory(from, 'assistant', reply); return msg.reply(reply);
-          } else {
-              // Si tiene varias, pide especificar (la IA debería manejar esto)
-              const citasStr = userBookings.map((b, i) => `${i+1}. ${b.servicio} (${DateTime.fromISO(b.fecha).setLocale('es').toFormat('cccc d')} ${b.hora_inicio})`).join('\n');
-              const reply = `Veo que tienes varias citas agendadas:\n${citasStr}\n¿Cuál de ellas quieres cancelar? (Dime el número o detalles)`;
-              pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
-          }
-      }
-
-      // Si la IA responde con una etiqueta <CANCELLED: {"id": "bookingId"}>
-      const cancellationMatch = text.match(/<CANCELLED:\s*({.*?})\s*>/); // OJO: Lo busca en el MENSAJE DEL USUARIO (asumiendo que la IA le pidió confirmar y el usuario dijo SÍ + tag)
-      // *** ESTA LÓGICA DE CANCELACIÓN DEBERÍA ESTAR EN LA RESPUESTA DE LA IA, NO EN EL MENSAJE DEL USUARIO ***
-      // *** VAMOS A DEJAR QUE LA IA MANEJE LA CONFIRMACIÓN Y PONGA EL TAG EN *SU* RESPUESTA ***
-
-      // --- Flujo Normal (Agendamiento o Preguntas) ---
-      const servicioDetectado = detectServicio(text);
-      const horaDetectada = detectHoraExacta(text);
-      const offset = detectHoyOMañana(text);
-      const pideHorarioGeneral = /horario|horas|hasta que hora|a que horas|disponibilidad/i.test(low) && !horaDetectada && !servicioDetectado;
-
-      if (pideHorarioGeneral) { /* ... (Misma lógica de antes) ... */ }
-
-      s.ctx.lastServicio = servicioDetectado || s.ctx.lastServicio;
-      setState(from, s);
-
-      const slots = generarSlotsDemo(3);
-      const promptSystem = getPromptDemoBarberia(slots);
-      // Añadir contexto sobre posible cancelación si aplica
-      if (s.ctx.bookingToCancel) {
-          promptSystem += `\n\nContexto Adicional: El usuario acaba de pedir cancelar una cita. Le preguntaste si confirma la cancelación de la cita con ID ${s.ctx.bookingToCancel}. Si responde "SÍ", debes responder "Listo, cita cancelada." e incluir la etiqueta <CANCELLED: {"id": "${s.ctx.bookingToCancel}"}>. Si dice "NO" o pregunta otra cosa, olvida la cancelación y continúa normal.`;
-      }
-      const messages = [ { role: 'system', content: promptSystem }, ...s.history.slice(-MAX_TURNS) ];
-
-      const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 350 });
-      let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí bien, ¿qué servicio necesitas?';
-
-      // --- Analizar Respuesta de IA para BOOKING o CANCELLED ---
-      const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
-      const cancelledMatch = reply.match(/<CANCELLED:\s*({.*?})\s*>/);
-
-      if (bookingMatch && bookingMatch[1]) {
-        let bookingData = null;
-        try { bookingData = JSON.parse(bookingMatch[1]); } catch (e) { console.error('Error parseando JSON de booking (IA):', e.message); }
-        // Fallback si la IA olvidó slots_usados o nombreCliente
-        if (bookingData) {
-            if (!bookingData.slots_usados || bookingData.slots_usados.length === 0) {
-               const servicio = bookingData.servicio || s.ctx.lastServicio; const dur = servicio && BARBERIA_DATA.servicios[servicio.toLowerCase()]?.min;
-               if(bookingData.hora_inicio && dur) { bookingData.slots_usados = calcularSlotsUsados(bookingData.hora_inicio, dur); console.log("[Fallback Booking] Slots calculados:", bookingData.slots_usados); }
-            }
-            if (!bookingData.nombreCliente) {
-                // Intentar extraer nombre del historial reciente si la IA lo olvidó
-                const nameHistory = s.history.slice(-3).find(h => h.role === 'user' && h.content.split(' ').length <= 3 && h.content.split(' ').length >= 1);
-                bookingData.nombreCliente = nameHistory ? nameHistory.content : "Cliente"; // Fallback simple
-                console.log("[Fallback Booking] Nombre cliente deducido:", bookingData.nombreCliente);
+        const isCancellation = detectCancelacion(text);
+        // --- Manejo de Cancelación (Inicio) ---
+        if (isCancellation) {
+            const userBookings = USER_BOOKINGS[from] || [];
+            if (userBookings.length === 0) { const reply = "No veo citas agendadas a tu nombre para cancelar. ¿Te ayudo con algo más?"; pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply); }
+            else if (userBookings.length === 1) {
+                const booking = userBookings[0]; const fechaFmt = DateTime.fromISO(booking.fecha).setLocale('es').toFormat('cccc d');
+                const reply = `Ok, veo tu cita de *${booking.servicio}* el *${fechaFmt} a las ${booking.hora_inicio}*. ¿Confirmas que quieres cancelarla? (Responde SÍ o NO)`;
+                s.ctx.bookingToCancel = booking.id; // Guardar ID en contexto
+                setState(from, s); pushHistory(from, 'assistant', reply); return msg.reply(reply);
+            } else {
+                const citasStr = userBookings.map((b, i) => `${i+1}. ${b.servicio} (${DateTime.fromISO(b.fecha).setLocale('es').toFormat('cccc d')} ${b.hora_inicio})`).join('\n');
+                const reply = `Tienes varias citas:\n${citasStr}\n¿Cuál quieres cancelar? (Dime el número o detalles)`;
+                pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply);
             }
         }
-        if (bookingData?.fecha && bookingData?.hora_inicio && bookingData?.servicio && bookingData?.slots_usados?.length > 0) {
-          await addReserva( from, bookingData.fecha, bookingData.hora_inicio, bookingData.servicio, bookingData.slots_usados, bookingData.nombreCliente );
-          reply = reply.replace(/<BOOKING:.*?>/, '').trim();
-          console.log(`[Reserva Demo Detectada y Guardada]`, bookingData);
-          s.history = []; // Limpiar historial post-reserva
-          s.ctx = { lastServicio: null, lastHorasSugeridas: [] }; // Limpiar contexto también
-        } else if (bookingMatch) {
-           console.warn("[Advertencia Booking] Tag BOOKING detectado pero incompleto:", bookingData || bookingMatch[1]);
-           reply = reply.replace(/<BOOKING:.*?>/, '').trim();
-        }
-      } else if (cancelledMatch && cancelledMatch[1]) {
-          let cancelData = null;
-          try { cancelData = JSON.parse(cancelledMatch[1]); } catch(e) { console.error('Error parseando JSON de cancelled (IA):', e.message); }
-          if (cancelData?.id) {
-              const cancelled = await removeReserva(from, cancelData.id);
-              if (cancelled) {
-                  reply = reply.replace(/<CANCELLED:.*?>/, '').trim(); // Limpiar tag
-                  console.log(`[Cancelación Demo] Reserva ${cancelData.id} cancelada por ${from}`);
-                  s.history = []; // Limpiar historial post-cancelación
-                  s.ctx = { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null }; // Limpiar contexto
-              } else {
-                  console.warn(`[Advertencia Cancelación] ID ${cancelData.id} no encontrado para usuario ${from}`);
-                  reply = "Hubo un problema al intentar cancelar. Parece que esa cita ya no existe."; // Respuesta de fallback
-              }
-          } else {
-             console.warn("[Advertencia Cancelación] Tag CANCELLED detectado pero sin ID:", cancelledMatch[1]);
-             reply = reply.replace(/<CANCELLED:.*?>/, '').trim(); // Limpiar tag
-          }
-          // Limpiar el ID de cancelación pendiente del contexto en cualquier caso
-          s.ctx.bookingToCancel = null;
-      } else {
-           // Si no hubo booking ni cancelación, pero estábamos esperando confirmación de cancelación, limpiar el estado
-           if(s.ctx.bookingToCancel) s.ctx.bookingToCancel = null;
-      }
-      // --- Fin Análisis Respuesta IA ---
-
-      pushHistory(from, 'assistant', reply);
-      setState(from, s);
-      await msg.reply(reply);
-      return;
+        // --- Flujo Normal (Agendamiento o Preguntas) ---
+        const servicioDetectado = detectServicio(text); const horaDetectada = detectHoraExacta(text); const offset = detectHoyOMañana(text); const pideHorarioGeneral = /horario|horas|hasta que hora|a que horas|disponibilidad/i.test(low) && !horaDetectada && !servicioDetectado;
+        if (pideHorarioGeneral) { const hoyDia = now().weekday; let horarioHoy = BARBERIA_DATA.horario.festivos; if (hoyDia >= 1 && hoyDia <= 5) horarioHoy = BARBERIA_DATA.horario.lun_vie; else if (hoyDia === 6) horarioHoy = BARBERIA_DATA.horario.sab; else if (hoyDia === 7) horarioHoy = BARBERIA_DATA.horario.dom; const reply = `¡Claro! Hoy atendemos de ${horarioHoy}. ¿Qué servicio buscas agendar? 😉`; pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply); }
+        s.ctx.lastServicio = servicioDetectado || s.ctx.lastServicio; setState(from, s);
+        const slots = generarSlotsDemo(3); let promptSystem = getPromptDemoBarberia(slots);
+        if (s.ctx.bookingToCancel) { promptSystem += `\n\nContexto Adicional: El usuario pidió cancelar. Le preguntaste si confirma la cancelación de la cita ID ${s.ctx.bookingToCancel}. Si responde "SÍ", responde "Listo, cita cancelada." e incluye <CANCELLED: {"id": "${s.ctx.bookingToCancel}"}>. Si dice "NO" o cambia de tema, olvida la cancelación.`; }
+        const messages = [ { role: 'system', content: promptSystem }, ...s.history.slice(-MAX_TURNS) ];
+        const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 350 }); let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí bien, ¿qué necesitas?';
+        // --- Analizar Respuesta de IA para BOOKING o CANCELLED ---
+        const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/); const cancelledMatch = reply.match(/<CANCELLED:\s*({.*?})\s*>/);
+        if (bookingMatch && bookingMatch[1]) {
+            let bookingData = null; try { bookingData = JSON.parse(bookingMatch[1]); } catch (e) { console.error('Error parseando JSON booking:', e.message); }
+            if (bookingData) { if (!bookingData.slots_usados || bookingData.slots_usados.length === 0) { const servicio = bookingData.servicio || s.ctx.lastServicio; const dur = servicio && BARBERIA_DATA.servicios[servicio.toLowerCase()]?.min; if(bookingData.hora_inicio && dur) { bookingData.slots_usados = calcularSlotsUsados(bookingData.hora_inicio, dur); console.log("[Fallback Booking] Slots calculados:", bookingData.slots_usados); } } if (!bookingData.nombreCliente) { const nameHistory = s.history.slice(-3).find(h => h.role === 'user' && h.content.split(' ').length <= 3 && h.content.split(' ').length >= 1 && !/^\d/.test(h.content) && !/^(si|sí|no|ok)$/i.test(h.content) ); bookingData.nombreCliente = nameHistory ? nameHistory.content : "Cliente"; console.log("[Fallback Booking] Nombre cliente:", bookingData.nombreCliente); } }
+            if (bookingData?.fecha && bookingData?.hora_inicio && bookingData?.servicio && bookingData?.slots_usados?.length > 0) { const success = await addReserva( from, bookingData.fecha, bookingData.hora_inicio, bookingData.servicio, bookingData.slots_usados, bookingData.nombreCliente ); if (success) { reply = reply.replace(/<BOOKING:.*?>/, '').trim(); console.log(`[Reserva Guardada]`, bookingData); s.history = []; s.ctx = { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null }; } else { console.warn("[Reserva] Conflicto de slot detectado, no se guardó reserva duplicada."); reply = "Parece que justo esa hora se ocupó mientras hablábamos. ¿Probamos con otra?"; }} else { console.warn("[Advertencia Booking] Tag BOOKING inválido:", bookingData || bookingMatch[1]); reply = reply.replace(/<BOOKING:.*?>/, '').trim(); }
+        } else if (cancelledMatch && cancelledMatch[1]) {
+            let cancelData = null; try { cancelData = JSON.parse(cancelledMatch[1]); } catch(e) { console.error('Error parseando JSON cancelled:', e.message); }
+            if (cancelData?.id) { const cancelled = await removeReserva(from, cancelData.id); if (cancelled) { reply = reply.replace(/<CANCELLED:.*?>/, '').trim(); console.log(`[Cancelación] Reserva ${cancelData.id} cancelada por ${from}`); s.history = []; s.ctx = { lastServicio: null, lastHorasSugeridas: [], bookingToCancel: null }; } else { console.warn(`[Cancelación] ID ${cancelData.id} no encontrado para ${from}`); reply = "Hubo un problema cancelando. Esa cita ya no aparece."; }} else { console.warn("[Cancelación] Tag CANCELLED sin ID:", cancelledMatch[1]); reply = reply.replace(/<CANCELLED:.*?>/, '').trim(); } s.ctx.bookingToCancel = null; // Limpiar siempre
+        } else { if(s.ctx.bookingToCancel) s.ctx.bookingToCancel = null; } // Limpiar si no hubo acción
+        // --- Fin Análisis Respuesta IA ---
+        pushHistory(from, 'assistant', reply); setState(from, s); await msg.reply(reply); return;
     }
 
     // 5. ===== MODO SHOWROOM (VENTAS) =====
-    if (s.mode === 'cortex') { /* ... (Sin cambios aquí, ya estaba mejorado) ... */ }
+    if (s.mode === 'cortex') { const yes_post_demo = /^(si|sí|s[ií] me interesa|dale|de una|h[áa]gale|me interesa|listo|me gust[óo]|me sirve|claro|ok|perfecto|brutal)\b/i.test(low); if (s.sales.awaiting === 'confirm') { if (yes_post_demo) { s.sales.awaiting = 'schedule'; s.sales.lastOffer = 'call'; const reply = 'Perfecto 🔥. Ese es el poder de no perder clientes. Te agendo con el equipo para personalizar tu asistente. ¿Tu nombre y tipo de negocio? 🚀'; pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply); } else { s.sales.awaiting = null; const reply = `Entendido. ¿Prefieres entonces que te lo deje listo en tu WhatsApp o primero una llamada corta para aclarar dudas?`; pushHistory(from, 'assistant', reply); setState(from, s); return msg.reply(reply); } } const messages = [ { role: 'system', content: PROMPT_VENTAS }, ...s.history.slice(-MAX_TURNS) ]; const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 250 }); let reply = completion.choices?.[0]?.message?.content?.trim() || '¿En qué más te puedo ayudar? 🙂'; const isAskingForDemo = /demo|muestr|probar|prueba|\/start test/i.test(low); const isClosing = /nombre|negocio|agendar|llamada/i.test(low); if (!isAskingForDemo && !isClosing && s.sales.awaiting !== 'schedule') { if (Math.random() < 0.6) { reply += `\n\n${pick(CTAs)}`; } } if (isAskingForDemo) { s.sales.lastOffer = 'demo'; s.sales.awaiting = 'confirm'; } pushHistory(from, 'assistant', reply); setState(from, s); await msg.reply(reply); return; }
 
   } catch (error) {
     console.error('****** ¡ERROR DETECTADO! ******\n', error, '\n*******************************');
