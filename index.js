@@ -301,11 +301,27 @@ async function sendOwnerEmailNotification(bookingData, type = 'new') {
 function generarSlotsDemo(diasAdelante = 3) { /* ... (Sin cambios) ... */ }
 
 // ======== WHATSAPP CLIENT ========
-const client = new Client({ /* ... (Sin cambios) ... */ });
-client.on('qr', (qr) => { /* ... (Sin cambios) ... */ });
-client.on('ready', () => console.log('✅ Cortex IA listo!'));
-client.on('auth_failure', msg => { console.error('ERROR DE AUTENTICACIÓN:', msg); });
-client.on('disconnected', (reason) => { console.log('Cliente desconectado:', reason); });
+const client = new Client({
+  authStrategy: new LocalAuth({
+      dataPath: path.join(__dirname, 'data', 'session')
+  }),
+  puppeteer: {
+    headless: true,
+    // *** AÑADIR RUTA EXPLÍCITA AL CHROMIUM INSTALADO ***
+    executablePath: '/usr/bin/chromium', // Ruta estándar en Debian/Ubuntu para Chromium instalado vía apt
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      // '--single-process', // Mantenlo comentado por ahora
+      '--disable-gpu',
+      '--disable-extensions'
+    ],
+  },
+});
 
 // ======== LLAMADA SEGURA A OPENAI (CON RETRY) ========
 async function safeChatCall(payload, tries = 2) { /* ... (Sin cambios) ... */ }
