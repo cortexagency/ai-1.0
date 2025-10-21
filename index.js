@@ -301,13 +301,14 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
-  console.log('\nEscanea este QR (WhatsApp → Dispositivos vinculados → Vincular):\n');
-  // Esta nueva función dibuja el QR de forma diferente
-  qrcode.toString(qr, { type: 'terminal', small: true }, (err, url) => {
-    if (err) throw err;
-    console.log(url);
-  });
-});;
+  console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo: \n');
+  // Esta función genera una URL con la imagen del QR
+  qrcode.toDataURL(qr, (err, url) => {
+    if (err) throw err;
+    console.log(url);
+    console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑');
+  });
+});
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
 
 // ======== HANDLER MENSAJES ========
