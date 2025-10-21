@@ -8,7 +8,7 @@ aptPkgs = [
   "libgtk-3-0",
   "libgdk-pixbuf2.0-0",
   "libgbm-dev",
-  "libasound2",
+  "libasound2t64", # <-- THIS IS THE CHANGED LINE
   "libxshmfence-dev",
   "libglu1-mesa",
   "libxrandr2",
