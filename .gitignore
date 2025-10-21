@@ -1,0 +1,12 @@
+# Archivos de Node
+node_modules/
+
+# Archivos de Sesión de WhatsApp
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Archivos de entorno (Contiene tus llaves secretas)
+.env
+
+# Archivo de base de datos de la demo
+data/demo_reservas.json
