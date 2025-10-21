@@ -323,10 +323,12 @@ function generarSlotsDemo(diasAdelante = 3) {
 
 // ======== WHATSAPP CLIENT ========
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: path.join(__dirname, 'data', 'session') // <-- Tells it to save session IN /app/data/session
+  }),
   puppeteer: {
     headless: true,
-    args: [                     // Correct Puppeteer arguments for Linux
+    args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
