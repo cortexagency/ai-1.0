@@ -308,7 +308,6 @@ const client = new Client({
   puppeteer: {
     headless: true,
     // *** AÑADIR RUTA EXPLÍCITA AL CHROMIUM INSTALADO ***
-    executablePath: '/usr/bin/chromium', // Ruta estándar en Debian/Ubuntu para Chromium instalado vía apt
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',

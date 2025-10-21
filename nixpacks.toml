@@ -8,8 +8,8 @@ aptPkgs = [
   "libgtk-3-0",
   "libgdk-pixbuf2.0-0",
   "libgbm-dev",
-  "libasound2t64", # <-- THIS IS THE CHANGED LINE
-  "libxshmfence-dev",
+  "libasound2t64",
+  "libxshmfence-dev", # Might be libxshmfence1 depending on distro version
   "libglu1-mesa",
   "libxrandr2",
   "libxfixes3",
@@ -20,5 +20,8 @@ aptPkgs = [
   "libdrm2",
   "libx11-xcb1",
   "libpangocairo-1.0-0",
-  "libcairo2"
+  "libcairo2",
+  "chromium", # Keep this one
+  "chromium-driver", # Add this
+  "chromium-sandbox" # Add this
 ]
