@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (v16 - PRODUCTION READY - COMPLETE)
+// CORTEX IA - INDEX.JS (v17 - Email Removed, WhatsApp Only)
 // =========================
 require('dotenv').config();
 
@@ -9,7 +9,7 @@ const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const { DateTime } = require('luxon');
-const nodemailer = require('nodemailer');
+// const nodemailer = require('nodemailer'); // <--- REMOVED
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const TZ = process.env.TZ || 'America/Bogota';
@@ -17,7 +17,7 @@ const MAX_TURNS = 12;
 
 // ======== Estado Global ========
 const state = {};
-let BOT_CONFIG = { ownerWhatsappId: null, ownerEmail: null };
+let BOT_CONFIG = { ownerWhatsappId: null }; // <--- Email removed
 
 // ======== GESTIÓN PERSISTENTE ========
 const DATA_DIR = path.join(__dirname, 'data');
@@ -29,6 +29,7 @@ let USER_BOOKINGS = {};
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
+// --- Funciones de Carga/Guardado ---
 function loadData(filePath, defaultData = {}) {
   try {
     if (fs.existsSync(filePath)) {
@@ -41,30 +42,33 @@ function loadData(filePath, defaultData = {}) {
     }
   } catch (e) {
     console.error(`[Error Memoria] ${path.basename(filePath)}:`, e.message);
-    try { 
-      fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8'); 
-    } catch (writeError) { 
-      console.error(`[Error Fatal] ${path.basename(filePath)}:`, writeError.message); 
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8');
+      console.warn(`[Memoria] Archivo ${path.basename(filePath)} reseteado.`);
+    } catch (writeError) {
+      console.error(`[Error Fatal] ${path.basename(filePath)}:`, writeError.message);
     }
     return defaultData;
   }
 }
 
 function saveData(filePath, data) {
-  try { 
-    fs.writeFileSync(filePath, JSON.stringify(data || {}, null, 2), 'utf8'); 
-  } catch (e) { 
-    console.error(`[Error Save] ${path.basename(filePath)}:`, e.message); 
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data || {}, null, 2), 'utf8');
+  } catch (e) {
+    console.error(`[Error Save] ${path.basename(filePath)}:`, e.message);
   }
 }
 
-function loadConfig() { 
-  BOT_CONFIG = loadData(CONFIG_PATH, { ownerWhatsappId: null, ownerEmail: null }); 
-  if (!BOT_CONFIG.ownerWhatsappId) BOT_CONFIG.ownerWhatsappId = null; 
-  if (!BOT_CONFIG.ownerEmail) BOT_CONFIG.ownerEmail = null; 
-  console.log('[Config] Cargada'); 
-  if (BOT_CONFIG.ownerWhatsappId) console.log(`[Config] Dueño WhatsApp: ${BOT_CONFIG.ownerWhatsappId}`); 
-  if (BOT_CONFIG.ownerEmail) console.log(`[Config] Dueño Email: ${BOT_CONFIG.ownerEmail}`); 
+function loadConfig() {
+  BOT_CONFIG = loadData(CONFIG_PATH, { ownerWhatsappId: null }); // <-- Email removed default
+  if (!BOT_CONFIG.ownerWhatsappId) BOT_CONFIG.ownerWhatsappId = null;
+  // <-- Removed ownerEmail check
+  console.log('[Config] Cargada');
+  if (!BOT_CONFIG.ownerWhatsappId) console.warn('[Advertencia Config] ownerWhatsappId no configurado. Usa /set owner.');
+  // <-- Removed ownerEmail warning
+  if (BOT_CONFIG.ownerWhatsappId) console.log(`[Config] Dueño WhatsApp: ${BOT_CONFIG.ownerWhatsappId}`);
+  // <-- Removed ownerEmail log
 }
 
 function saveConfig() { saveData(CONFIG_PATH, BOT_CONFIG); }
@@ -78,25 +82,25 @@ loadReservas();
 loadUserBookings();
 
 // ======== DATOS BARBERÍA ========
-const BARBERIA_DATA = { 
-  nombre: "Barbería La 70", 
-  direccion: "Calle 70 #45-18, Belén, Medellín", 
-  telefono: "+57 310 555 1234", 
-  horario: { 
-    lun_vie: "9:00 AM – 8:00 PM", 
-    sab: "9:00 AM – 6:00 PM", 
-    dom: "10:00 AM – 4:00 PM", 
-    almuerzo_demo: { start: 13, end: 14 } 
-  }, 
-  capacidad: { slot_base_min: 20 }, 
-  servicios: { 
-    'corte clasico': { precio: 35000, min: 40 }, 
-    'corte + degradado + diseño': { precio: 55000, min: 60 }, 
-    'barba completa': { precio: 28000, min: 30 }, 
-    'corte + barba': { precio: 75000, min: 70 }, 
-    'afeitado tradicional': { precio: 45000, min: 45 }, 
-    'vip': { precio: 120000, min: 90 } 
-  }, 
+const BARBERIA_DATA = {
+  nombre: "Barbería La 70",
+  direccion: "Calle 70 #45-18, Belén, Medellín",
+  telefono: "+57 310 555 1234",
+  horario: {
+    lun_vie: "9:00 AM – 8:00 PM",
+    sab: "9:00 AM – 6:00 PM",
+    dom: "10:00 AM – 4:00 PM",
+    almuerzo_demo: { start: 13, end: 14 }
+  },
+  capacidad: { slot_base_min: 20 },
+  servicios: {
+    'corte clasico': { precio: 35000, min: 40 },
+    'corte + degradado + diseño': { precio: 55000, min: 60 },
+    'barba completa': { precio: 28000, min: 30 },
+    'corte + barba': { precio: 75000, min: 70 },
+    'afeitado tradicional': { precio: 45000, min: 45 },
+    'vip': { precio: 120000, min: 90 }
+  },
   pagos: ["Nequi", "Daviplata", "Efectivo"]
 };
 
@@ -107,150 +111,126 @@ const CTAs = ["¿Quieres verlo? /start test 💈", "¿Agendamos 10 min para expl
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 function getPromptDemoBarberia(slotsDisponibles) {
-  const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy'); 
-  const serviciosTxt = Object.entries(BARBERIA_DATA.servicios).map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`).join('\n'); 
-  let slotsTxt = "No hay cupos disponibles próximos 3 días."; 
-  if (slotsDisponibles?.length) { 
-    slotsTxt = slotsDisponibles.map(d => `${DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d LLLL')}: ${d.horas.join(', ')}`).join('\n'); 
-  } 
+  const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy');
+  const serviciosTxt = Object.entries(BARBERIA_DATA.servicios).map(([k, v]) => `- ${k}: $${v.precio.toLocaleString('es-CO')} (${v.min} min)`).join('\n');
+  let slotsTxt = "No hay cupos disponibles próximos 3 días.";
+  if (slotsDisponibles?.length) {
+    slotsTxt = slotsDisponibles.map(d => `${DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d LLLL')}: ${d.horas.join(', ')}`).join('\n');
+  }
   return `Eres Asistente de ${BARBERIA_DATA.nombre}. Amable, profesional, paisa. Objetivo: agendar citas. Hoy: ${hoy}. FLUJO: 1.Pregunta servicio 2.Di precio 3.Pregunta hora 4.Confirma hora y PIDE NOMBRE 5.Con hora+nombre incluye <BOOKING: {"servicio":"...", "fecha":"YYYY-MM-DD", "hora_inicio":"H:MM AM/PM", "slots_usados":[...], "nombreCliente":"..."}>. SLOTS:\n${slotsTxt}\nSERVICIOS:\n${serviciosTxt}\nHorario: L-V ${BARBERIA_DATA.horario.lun_vie}, Sáb ${BARBERIA_DATA.horario.sab}, Dom ${BARBERIA_DATA.horario.dom}`;
 }
 
 // ======== UTILIDADES ========
 function now() { return DateTime.now().setZone(TZ); }
-function detectServicio(text) { 
-  const m = text.toLowerCase(); 
-  if (m.includes('vip')) return 'vip'; 
-  if (m.includes('degrad')) return 'corte + degradado + diseño'; 
-  if (m.includes('barba')) return 'barba completa'; 
-  if (m.includes('corte')) return 'corte clasico'; 
-  return null; 
-}
-function detectHoraExacta(text) { 
-  const h = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i); 
-  if (!h) return null; 
-  let hh = parseInt(h[1], 10); 
-  const mm = h[2] ? parseInt(h[2], 10) : 0; 
-  let suffix = (h[3] || '').toUpperCase(); 
-  if (!suffix) suffix = (hh >= 9 && hh <= 11) ? 'AM' : 'PM'; 
-  if (hh > 12) { hh -= 12; suffix = 'PM'; }
-  return `${hh}:${String(mm).padStart(2, '0')} ${suffix}`; 
-}
+function detectServicio(text) { const m = text.toLowerCase(); if (m.includes('vip')) return 'vip'; if (m.includes('degrad')) return 'corte + degradado + diseño'; if (m.includes('barba')) return 'barba completa'; if (m.includes('corte')) return 'corte clasico'; return null; }
+function detectHoraExacta(text) { const h = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i); if (!h) return null; let hh = parseInt(h[1], 10); const mm = h[2] ? parseInt(h[2], 10) : 0; let suffix = (h[3] || '').toUpperCase(); if (!suffix) suffix = (hh >= 9 && hh <= 11) ? 'AM' : 'PM'; if (hh > 12) { hh -= 12; suffix = 'PM'; } return `${hh}:${String(mm).padStart(2, '0')} ${suffix}`; }
 function detectCancelacion(text) { return /cancelar|cancela|no puedo ir/i.test(text); }
-function calcularSlotsUsados(horaInicio, durMin) { 
-  const n = Math.ceil(durMin / BARBERIA_DATA.capacidad.slot_base_min); 
-  const start = DateTime.fromFormat(horaInicio.toUpperCase(), 'h:mm a', { zone: TZ }); 
-  if (!start.isValid) return [horaInicio]; 
-  const arr = []; 
-  for (let i = 0; i < n; i++) arr.push(start.plus({ minutes: i * 20 }).toFormat('h:mm a')); 
-  return arr; 
-}
-function parseRango(fecha, rango) { 
-  const [ini, fin] = rango.split('–').map(s => s.trim()); 
-  const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); 
-  const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); 
-  return [open, close]; 
-}
+function calcularSlotsUsados(horaInicio, durMin) { const n = Math.ceil(durMin / BARBERIA_DATA.capacidad.slot_base_min); const start = DateTime.fromFormat(horaInicio.toUpperCase(), 'h:mm a', { zone: TZ }); if (!start.isValid) return [horaInicio]; const arr = []; for (let i = 0; i < n; i++) arr.push(start.plus({ minutes: i * 20 }).toFormat('h:mm a')); return arr; }
+function parseRango(fecha, rango) { const [ini, fin] = rango.split('–').map(s => s.trim()); const open = DateTime.fromFormat(ini, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); const close = DateTime.fromFormat(fin, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day }); return [open, close]; }
 function generateBookingId() { return Math.random().toString(36).substring(2, 9); }
 
-function ensureState(id) { 
-  if (!id || typeof id !== 'string') return { botEnabled: false, mode: 'cortex', history: [], sales: {}, ctx: {} }; 
-  if (!state[id]) state[id] = { botEnabled: true, mode: 'cortex', history: [], sales: {}, ctx: {} }; 
-  return state[id]; 
-}
+// ===== Gestión de Estado =====
+function ensureState(id) { if (!id || typeof id !== 'string') return { botEnabled: false, mode: 'cortex', history: [], sales: {}, ctx: {} }; if (!state[id]) state[id] = { botEnabled: true, mode: 'cortex', history: [], sales: {}, ctx: {} }; return state[id]; }
 function setState(id, s) { if (id && typeof id === 'string') state[id] = s; }
-function pushHistory(id, role, content) { 
-  const s = ensureState(id); 
-  s.history.push({ role, content, at: Date.now() }); 
-  while (s.history.length > MAX_TURNS) s.history.shift(); 
-}
+function pushHistory(id, role, content) { const s = ensureState(id); s.history.push({ role, content, at: Date.now() }); while (s.history.length > MAX_TURNS) s.history.shift(); }
 
-async function addReserva(userId, fecha, hora_inicio, servicio, slots_usados = [], nombreCliente = "Cliente") { 
-  if (!DEMO_RESERVAS[fecha]) DEMO_RESERVAS[fecha] = []; 
-  let conflict = slots_usados.some(h => DEMO_RESERVAS[fecha].includes(h)); 
+// ===== Gestión de Reservas =====
+async function addReserva(userId, fecha, hora_inicio, servicio, slots_usados = [], nombreCliente = "Cliente") {
+  if (!DEMO_RESERVAS[fecha]) DEMO_RESERVAS[fecha] = [];
+  let conflict = slots_usados.some(h => DEMO_RESERVAS[fecha].includes(h));
   if (conflict) { console.warn(`[Reserva] Conflicto ${servicio} ${hora_inicio} ${fecha}`); return false; }
-  slots_usados.forEach(h => DEMO_RESERVAS[fecha].push(h)); 
-  saveReservas(); 
-  if (!USER_BOOKINGS[userId]) USER_BOOKINGS[userId] = []; 
-  const bookingId = generateBookingId(); 
-  const newBooking = { id: bookingId, fecha, hora_inicio, servicio, slots_usados, nombreCliente }; 
-  USER_BOOKINGS[userId].push(newBooking); 
-  saveUserBookings(); 
-  console.log(`[Reserva] Nueva para ${userId}:`, newBooking); 
-  if (BOT_CONFIG.ownerWhatsappId) await sendOwnerNotification(newBooking, 'new').catch(e => console.error('[WhatsApp]:', e.message)); 
-  if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) await sendOwnerEmailNotification(newBooking, 'new').catch(e => console.error('[Email]:', e.message)); 
-  return true; 
+
+  slots_usados.forEach(h => DEMO_RESERVAS[fecha].push(h));
+  saveReservas();
+
+  if (!USER_BOOKINGS[userId]) USER_BOOKINGS[userId] = [];
+  const bookingId = generateBookingId();
+  const newBooking = { id: bookingId, fecha, hora_inicio, servicio, slots_usados, nombreCliente };
+  USER_BOOKINGS[userId].push(newBooking);
+  saveUserBookings();
+  console.log(`[Reserva] Nueva para ${userId}:`, newBooking);
+
+  // Notificación WhatsApp
+  if (BOT_CONFIG.ownerWhatsappId) {
+      await sendOwnerNotification(newBooking, 'new').catch(e => console.error('[WhatsApp Notif Error]:', e.message));
+  } else {
+      console.warn('[WhatsApp Notif] Dueño no configurado.');
+  }
+  // <-- Removed Email Notification Call
+  return true;
 }
 
-async function removeReserva(userId, bookingId) { 
-  if (!USER_BOOKINGS[userId]) return false; 
-  const idx = USER_BOOKINGS[userId].findIndex(b => b.id === bookingId); 
-  if (idx === -1) return false; 
-  const booking = USER_BOOKINGS[userId][idx]; 
-  if (DEMO_RESERVAS[booking.fecha]) { 
-    DEMO_RESERVAS[booking.fecha] = DEMO_RESERVAS[booking.fecha].filter(s => !booking.slots_usados.includes(s)); 
-    if (DEMO_RESERVAS[booking.fecha].length === 0) delete DEMO_RESERVAS[booking.fecha]; 
-  } 
-  saveReservas(); 
-  USER_BOOKINGS[userId].splice(idx, 1); 
-  if (USER_BOOKINGS[userId].length === 0) delete USER_BOOKINGS[userId]; 
-  saveUserBookings(); 
-  console.log(`[Cancelación] ${bookingId} de ${userId}`); 
-  if (BOT_CONFIG.ownerWhatsappId) await sendOwnerNotification(booking, 'cancelled').catch(e => console.error('[WhatsApp]:', e.message)); 
-  if (BOT_CONFIG.ownerEmail && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) await sendOwnerEmailNotification(booking, 'cancelled').catch(e => console.error('[Email]:', e.message)); 
-  return true; 
+async function removeReserva(userId, bookingId) {
+  if (!USER_BOOKINGS[userId]) return false;
+  const idx = USER_BOOKINGS[userId].findIndex(b => b.id === bookingId);
+  if (idx === -1) return false;
+
+  const booking = USER_BOOKINGS[userId][idx];
+  if (DEMO_RESERVAS[booking.fecha]) {
+    DEMO_RESERVAS[booking.fecha] = DEMO_RESERVAS[booking.fecha].filter(s => !booking.slots_usados.includes(s));
+    if (DEMO_RESERVAS[booking.fecha].length === 0) delete DEMO_RESERVAS[booking.fecha];
+  }
+  saveReservas();
+
+  USER_BOOKINGS[userId].splice(idx, 1);
+  if (USER_BOOKINGS[userId].length === 0) delete USER_BOOKINGS[userId];
+  saveUserBookings();
+  console.log(`[Cancelación] ${bookingId} de ${userId}`);
+
+  // Notificación WhatsApp
+  if (BOT_CONFIG.ownerWhatsappId) {
+      await sendOwnerNotification(booking, 'cancelled').catch(e => console.error('[WhatsApp Cancel Notif Error]:', e.message));
+  } else {
+      console.warn('[WhatsApp Cancel Notif] Dueño no configurado.');
+  }
+  // <-- Removed Email Notification Call
+  return true;
 }
 
-async function sendOwnerNotification(bookingData, type = 'new') { 
-  const ownerId = BOT_CONFIG.ownerWhatsappId; 
-  if (!ownerId) return; 
-  const fecha = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL'); 
-  const msg = type === 'new' 
-    ? `🔔 *Nueva Cita*\n\nCliente: *${bookingData.nombreCliente}*\nServicio: *${bookingData.servicio}*\nFecha: *${fecha}*\nHora: *${bookingData.hora_inicio}*\n\n_(Cortex IA)_`
-    : `❌ *Cita Cancelada*\n\nCliente: *${bookingData.nombreCliente}*\nServicio: *${bookingData.servicio}*\nFecha: *${fecha}*\nHora: *${bookingData.hora_inicio}*`; 
-  await client.sendMessage(ownerId, msg); 
+// ===== Notificaciones (Solo WhatsApp) =====
+async function sendOwnerNotification(bookingData, type = 'new') {
+  const ownerId = BOT_CONFIG.ownerWhatsappId;
+  if (!ownerId) {
+      console.warn('[WhatsApp Notif Send] ownerWhatsappId no configurado.');
+      return;
+  }
+  const fecha = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL');
+  const msg = type === 'new'
+    ? `🔔 *Nueva Cita*\n\nCliente: *${bookingData.nombreCliente || 'N/A'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fecha}*\nHora: *${bookingData.hora_inicio}*\n\n_(Cortex IA)_`
+    : `❌ *Cita Cancelada*\n\nCliente: *${bookingData.nombreCliente || 'N/A'}*\nServicio: *${bookingData.servicio}*\nFecha: *${fecha}*\nHora: *${bookingData.hora_inicio}*`;
+  await client.sendMessage(ownerId, msg);
+  console.log(`[WhatsApp Notif Send] Notificación tipo '${type}' enviada a ${ownerId}`);
 }
 
-async function sendOwnerEmailNotification(bookingData, type = 'new') { 
-  const ownerEmail = BOT_CONFIG.ownerEmail; 
-  const senderEmail = process.env.GMAIL_USER; 
-  const senderPassword = process.env.GMAIL_APP_PASSWORD; 
-  if (!ownerEmail || !senderEmail || !senderPassword) return; 
-  const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: senderEmail, pass: senderPassword } }); 
-  const fecha = DateTime.fromISO(bookingData.fecha).setLocale('es').toFormat('cccc d LLLL'); 
-  const subject = type === 'new' ? `Nueva Cita: ${bookingData.servicio}` : `Cita Cancelada: ${bookingData.servicio}`; 
-  const body = `<h2>${type === 'new' ? '🔔 Nueva Cita' : '❌ Cita Cancelada'}</h2><p><strong>Cliente:</strong> ${bookingData.nombreCliente}</p><p><strong>Servicio:</strong> ${bookingData.servicio}</p><p><strong>Fecha:</strong> ${fecha}</p><p><strong>Hora:</strong> ${bookingData.hora_inicio}</p><hr><p><em>Cortex IA</em></p>`; 
-  await transporter.sendMail({ from: `"Cortex IA" <${senderEmail}>`, to: ownerEmail, subject, html: body }); 
-  console.log(`[Email] Enviado a ${ownerEmail}`); 
-}
+// async function sendOwnerEmailNotification(...) // <-- FUNCTION REMOVED
 
-function generarSlotsDemo(diasAdelante = 3) { 
-  const hoy = now(); 
-  const out = []; 
-  for (let d = 0; d < diasAdelante; d++) { 
-    const fecha = hoy.plus({ days: d }); 
-    const fechaStr = fecha.toFormat('yyyy-LL-dd'); 
-    const wd = fecha.weekday; 
-    let open, close; 
-    if (wd >= 1 && wd <= 5) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.lun_vie); 
-    else if (wd === 6) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.sab); 
-    else [open, close] = parseRango(fecha, BARBERIA_DATA.horario.dom); 
-    let cursor = open; 
-    if (d === 0 && hoy > open) { 
-      const minsSinceOpen = hoy.diff(open, 'minutes').minutes; 
-      cursor = open.plus({ minutes: Math.ceil(minsSinceOpen / 20) * 20 }); 
-    } 
-    const horas = []; 
-    while (cursor < close && horas.length < 20) { 
-      const hh = cursor.toFormat('h:mm a'); 
-      const ocupada = DEMO_RESERVAS[fechaStr]?.includes(hh); 
-      const esAlmuerzo = cursor.hour >= 13 && cursor.hour < 14; 
-      if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) horas.push(hh); 
-      cursor = cursor.plus({ minutes: 20 }); 
-    } 
-    if (horas.length) out.push({ fecha: fechaStr, horas }); 
-  } 
-  return out; 
+function generarSlotsDemo(diasAdelante = 3) {
+  const hoy = now();
+  const out = [];
+  for (let d = 0; d < diasAdelante; d++) {
+    const fecha = hoy.plus({ days: d });
+    const fechaStr = fecha.toFormat('yyyy-LL-dd');
+    const wd = fecha.weekday;
+    let open, close;
+    if (wd >= 1 && wd <= 5) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.lun_vie);
+    else if (wd === 6) [open, close] = parseRango(fecha, BARBERIA_DATA.horario.sab);
+    else [open, close] = parseRango(fecha, BARBERIA_DATA.horario.dom);
+    let cursor = open;
+    if (d === 0 && hoy > open) {
+      const minsSinceOpen = hoy.diff(open, 'minutes').minutes;
+      cursor = open.plus({ minutes: Math.ceil(minsSinceOpen / 20) * 20 });
+    }
+    const horas = [];
+    while (cursor < close && horas.length < 20) {
+      const hh = cursor.toFormat('h:mm a');
+      const ocupada = DEMO_RESERVAS[fechaStr]?.includes(hh);
+      const esAlmuerzo = cursor.hour >= 13 && cursor.hour < 14;
+      if (!ocupada && !esAlmuerzo && cursor > hoy.plus({ minutes: 30 })) horas.push(hh);
+      cursor = cursor.plus({ minutes: 20 });
+    }
+    if (horas.length) out.push({ fecha: fechaStr, horas });
+  }
+  return out;
 }
 
 // ======== WHATSAPP CLIENT ========
@@ -258,29 +238,16 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: path.join(__dirname, 'data', 'session') }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] // Simplified args, should be enough with Nixpacks
   }
 });
-
-client.on('qr', (qr) => { 
-  qrcode.toDataURL(qr, (err, url) => { 
-    if (!err) console.log('\n⚠️ Escanea el QR en: ', url, '\n'); 
-  }); 
-});
+client.on('qr', (qr) => { qrcode.toDataURL(qr, (err, url) => { if (!err) console.log('\n⚠️ Escanea el QR en: ', url, '\n'); }); });
 client.on('ready', () => console.log('✅ Cortex IA listo!'));
 client.on('auth_failure', msg => console.error('ERROR AUTH:', msg));
+client.on('disconnected', (reason) => { console.log('Cliente desconectado:', reason); }); // Added listener
 
-async function safeChatCall(payload, tries = 2) { 
-  for (let i = 0; i < tries; i++) { 
-    try { 
-      return await openai.chat.completions.create(payload); 
-    } catch (e) { 
-      console.error(`[OpenAI] Intento ${i + 1} falló:`, e.message); 
-      if (i === tries - 1) throw e; 
-      await new Promise(r => setTimeout(r, 700)); 
-    } 
-  } 
-}
+// ======== LLAMADA SEGURA A OPENAI ========
+async function safeChatCall(payload, tries = 2) { for (let i = 0; i < tries; i++) { try { return await openai.chat.completions.create(payload); } catch (e) { console.error(`[OpenAI] Intento ${i + 1} falló:`, e.message); if (i === tries - 1) throw e; await new Promise(r => setTimeout(r, 700)); } } }
 
 // ======== HANDLER MENSAJES ========
 client.on('message', async (msg) => {
@@ -294,34 +261,24 @@ client.on('message', async (msg) => {
     pushHistory(from, 'user', text);
 
     // Comandos Admin
-    if (low.startsWith('/set owner ')) { 
-      if (BOT_CONFIG.ownerWhatsappId && from !== BOT_CONFIG.ownerWhatsappId) return msg.reply('🔒 Solo el dueño actual puede cambiar esto.'); 
-      const newOwner = low.split(' ')[2]?.trim(); 
-      if (newOwner && /^\d+@c\.us$/.test(newOwner)) { 
-        BOT_CONFIG.ownerWhatsappId = newOwner; 
-        saveConfig(); 
-        return msg.reply(`✅ Dueño WhatsApp configurado: ${newOwner}`); 
-      } 
-      return msg.reply('❌ Formato: /set owner numero@c.us'); 
+    if (low.startsWith('/set owner ')) {
+      if (BOT_CONFIG.ownerWhatsappId && from !== BOT_CONFIG.ownerWhatsappId) return msg.reply('🔒 Solo el dueño actual puede cambiar esto.');
+      const newOwner = low.split(' ')[2]?.trim();
+      if (newOwner && /^\d+@c\.us$/.test(newOwner)) {
+        BOT_CONFIG.ownerWhatsappId = newOwner;
+        saveConfig();
+        return msg.reply(`✅ Dueño WhatsApp configurado: ${newOwner}`);
+      }
+      return msg.reply('❌ Formato: /set owner numero@c.us');
     }
 
-    if (low.startsWith('/set email ')) { 
-      if (!BOT_CONFIG.ownerWhatsappId || from !== BOT_CONFIG.ownerWhatsappId) return msg.reply('🔒 Solo el dueño puede configurar email.'); 
-      const newEmail = low.split(' ')[2]?.trim(); 
-      if (newEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) { 
-        BOT_CONFIG.ownerEmail = newEmail; 
-        saveConfig(); 
-        return msg.reply(`✅ Email configurado: ${newEmail}`); 
-      } 
-      return msg.reply('❌ Formato: /set email tu@correo.com'); 
-    }
+    // if (low.startsWith('/set email ')) { ... } // <-- BLOCK REMOVED
 
-    if (low === '/clear reservas demo' && from === BOT_CONFIG.ownerWhatsappId) { 
-      DEMO_RESERVAS = {}; 
-      saveReservas(); 
-      USER_BOOKINGS = {}; 
-      saveUserBookings(); 
-      return msg.reply('🧹 Reservas limpiadas'); 
+    if (low === '/clear reservas demo' && from === BOT_CONFIG.ownerWhatsappId) {
+      DEMO_RESERVAS = {}; saveReservas();
+      USER_BOOKINGS = {}; saveUserBookings();
+      console.log('[Memoria] Reservas limpiadas por admin.');
+      return msg.reply('🧹 Reservas limpiadas');
     }
 
     // Bot ON/OFF
@@ -329,21 +286,9 @@ client.on('message', async (msg) => {
     if (low === '/bot on') { s.botEnabled = true; setState(from, s); return msg.reply('💪 Bot activado'); }
     if (!s.botEnabled) return;
 
-    // Demo
-    if (low === '/start test') { 
-      s.mode = 'barberia'; 
-      s.history = []; 
-      s.ctx = {}; 
-      setState(from, s); 
-      return msg.reply(`*${BARBERIA_DATA.nombre}* 💈 (Demo)\nEscríbeme como cliente.`); 
-    }
-    if (low === '/end test') { 
-      s.mode = 'cortex'; 
-      s.history = []; 
-      s.sales = { awaiting: 'confirm' }; 
-      setState(from, s); 
-      return msg.reply('¡Demo finalizada! ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp.'); 
-    }
+    // Demo on/off
+    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre}* 💈 (Demo)\nEscríbeme como cliente.`); }
+    if (low === '/end test') { s.mode = 'cortex'; s.history = []; s.sales = { awaiting: 'confirm' }; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp.'); }
 
     // MODO BARBERÍA
     if (s.mode === 'barberia') {
