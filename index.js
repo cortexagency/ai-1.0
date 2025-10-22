@@ -29,8 +29,8 @@ let BOT_CONFIG = { ownerWhatsappId: null };
 // ======== GESTIÓN PERSISTENTE ========
 const DATA_DIR = path.join(__dirname, 'data');
 const PROMPTS_DIR = path.join(__dirname, 'prompts');
-console.log(`[Debug Path] Directorio de Datos: ${DATA_DIR}`); // Log para verificar ruta
-console.log(`[Debug Path] Directorio de Prompts: ${PROMPTS_DIR}`); // Log para verificar ruta
+console.log(`[Debug Path] Directorio de Datos: ${DATA_DIR}`);
+console.log(`[Debug Path] Directorio de Prompts: ${PROMPTS_DIR}`);
 
 const DEMO_RESERVAS_PATH = path.join(DATA_DIR, 'demo_reservas.json');
 const USER_BOOKINGS_PATH = path.join(DATA_DIR, 'user_bookings.json');
@@ -47,17 +47,15 @@ let PROMPT_DEMO_TEMPLATE = "";
 
 // Asegurarse de que las carpetas existan
 try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); // recursive: true por si acaso
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     if (!fs.existsSync(PROMPTS_DIR)) fs.mkdirSync(PROMPTS_DIR, { recursive: true });
 } catch (dirError) {
     console.error("Error creando directorios data/prompts:", dirError);
-    // Considerar salir si no se pueden crear directorios críticos
 }
 
-
-// --- Funciones de Carga/Guardado (Simplificadas y con más logs) ---
+// --- Funciones de Carga/Guardado ---
 function loadData(filePath, defaultData = {}, isJson = true) {
-  console.log(`[Debug Load] Intentando cargar: ${filePath}`); // Log antes de cargar
+  console.log(`[Debug Load] Intentando cargar: ${filePath}`);
   try {
     if (fs.existsSync(filePath)) {
       const fileContent = fs.readFileSync(filePath, 'utf8');
@@ -75,16 +73,13 @@ function loadData(filePath, defaultData = {}, isJson = true) {
       return defaultData;
     }
   } catch (e) {
-    // Loguear error específico de carga/parseo
     console.error(`[Error Memoria Load/Parse] ${path.basename(filePath)}:`, e.message);
-    // Intentar resetear solo si el error fue al PARSEAR, no al leer
     if (e instanceof SyntaxError && isJson) {
         try { fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8'); console.warn(`[Memoria] Archivo JSON ${path.basename(filePath)} reseteado por error de parseo.`); } catch (writeError) { console.error(`[Error Memoria Fatal] No se pudo resetear ${path.basename(filePath)}:`, writeError.message); }
     } else if (!fs.existsSync(filePath)) {
-        // Si el error fue porque no existe (aunque ya lo chequeamos antes, por si acaso)
          try { const contentToWrite = isJson ? JSON.stringify(defaultData, null, 2) : ''; fs.writeFileSync(filePath, contentToWrite, 'utf8'); console.warn(`[Memoria] Archivo ${path.basename(filePath)} creado tras error de lectura.`); } catch (writeError) { console.error(`[Error Memoria Fatal] No se pudo crear ${path.basename(filePath)} tras error:`, writeError.message); }
     }
-    return defaultData; // Siempre devolver default en caso de error grave
+    return defaultData;
   }
 }
 function saveData(filePath, data) {
@@ -99,29 +94,28 @@ function saveReservas() { saveData(DEMO_RESERVAS_PATH, DEMO_RESERVAS); }
 function loadUserBookings() { USER_BOOKINGS = loadData(USER_BOOKINGS_PATH, {}); console.log('[User Bookings] Cargadas'); }
 function saveUserBookings() { saveData(USER_BOOKINGS_PATH, USER_BOOKINGS); }
 
-// --- Carga de Archivos Externos Críticos (Simplificada) ---
+// --- Carga de Archivos Externos Críticos ---
 function loadExternalFiles() {
     console.log("--- Cargando Archivos Externos ---");
     BARBERIA_DATA = loadData(BARBERIA_INFO_PATH, {}, true);
-    PROMPT_VENTAS = loadData(PROMPT_VENTAS_PATH, "", false); // Default a string vacía
-    PROMPT_DEMO_TEMPLATE = loadData(PROMPT_BARBERIA_BASE_PATH, "", false); // Default a string vacía
+    PROMPT_VENTAS = loadData(PROMPT_VENTAS_PATH, "", false);
+    PROMPT_DEMO_TEMPLATE = loadData(PROMPT_BARBERIA_BASE_PATH, "", false);
 
-    // Validaciones más estrictas
     if (!BARBERIA_DATA || typeof BARBERIA_DATA !== 'object' || Object.keys(BARBERIA_DATA).length === 0) {
         console.error("¡ERROR FATAL! data/barberia_info.json está vacío o corrupto. Usando datos mínimos.");
         BARBERIA_DATA = { nombre: "Demo", horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "" };
     } else {
         console.log("[External] barberia_info.json cargado OK.");
     }
-    if (!PROMPT_VENTAS || typeof PROMPT_VENTAS !== 'string' || PROMPT_VENTAS.length < 50) { // Check si es string y tiene algo de contenido
+    if (!PROMPT_VENTAS || typeof PROMPT_VENTAS !== 'string' || PROMPT_VENTAS.length < 50) {
         console.error("¡ERROR FATAL! prompts/ventas.txt vacío o no cargado.");
-        PROMPT_VENTAS = "Error: Prompt de ventas no disponible."; // Fallback
+        PROMPT_VENTAS = "Error: Prompt de ventas no disponible.";
     } else {
          console.log("[External] ventas.txt cargado OK.");
     }
     if (!PROMPT_DEMO_TEMPLATE || typeof PROMPT_DEMO_TEMPLATE !== 'string' || PROMPT_DEMO_TEMPLATE.length < 50) {
         console.error("¡ERROR FATAL! prompts/barberia_base.txt vacío o no cargado.");
-        PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible."; // Fallback
+        PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
     } else {
          console.log("[External] barberia_base.txt cargado OK.");
     }
@@ -132,18 +126,16 @@ function loadExternalFiles() {
 loadConfig();
 loadReservas();
 loadUserBookings();
-loadExternalFiles(); // Cargar archivos JSON y TXT
+loadExternalFiles();
 
-// ======== DATOS BARBERÍA (Ahora se usa la variable cargada BARBERIA_DATA) ========
+// ======== DATOS BARBERÍA (via BARBERIA_DATA) ========
 
-// ======== PROMPTS (Variables ahora leen de archivos) ========
+// ======== PROMPTS ========
 const CTAs = ["¿Quieres verlo? /start test 💈", "¿Agendamos 10 min para explicarte?"];
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 function getPromptDemoBarberia(slotsDisponibles) {
-  // Usar PROMPT_DEMO_TEMPLATE cargado y BARBERIA_DATA cargado
   if (!PROMPT_DEMO_TEMPLATE || PROMPT_DEMO_TEMPLATE.startsWith("Error:")) return "Error: Plantilla prompt demo no cargada.";
-  // ... (Resto de la lógica de reemplazo, igual que antes) ...
   const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy'); const hoyDiaSemana = now().weekday;
   const servicios = BARBERIA_DATA.servicios || {}; const horario = BARBERIA_DATA.horario || {}; const faqs = BARBERIA_DATA.faqs || []; const pagos = BARBERIA_DATA.pagos || [];
   const serviciosTxt = Object.entries(servicios).map(([k, v]) => `- ${k}: $${(v.precio || 0).toLocaleString('es-CO')} (${v.min || 'N/A'} min)`).join('\n');
@@ -177,7 +169,25 @@ function parseRango(fecha, rango) { /* ... (Sin cambios) ... */ }
 function generateBookingId() { return Math.random().toString(36).substring(2, 9); }
 
 // ===== Gestión de Estado =====
-function ensureState(id) { /* ... (Sin cambios) ... */ }
+function ensureState(id) {
+  const defaultState = {
+    botEnabled: true,
+    mode: 'cortex',
+    history: [],
+    reservas: [],
+    flags: { justEndedTest: false },
+    ctx: {},
+    sales: {}
+  };
+
+  if (!id || typeof id !== 'string') {
+    return { ...defaultState };
+  }
+  if (!state[id]) {
+    state[id] = { ...defaultState };
+  }
+  return state[id];
+}
 function setState(id, s) { if (id && typeof id === 'string') state[id] = s; }
 function pushHistory(id, role, content) { /* ... (Sin cambios) ... */ }
 
@@ -204,17 +214,15 @@ const client = new Client({
     authStrategy: new LocalAuth({ dataPath: path.join(__dirname, 'data', 'session') }),
     puppeteer: {
         headless: true,
-        // executablePath: '/usr/bin/chromium', // Mantener comentado!
-        // *** Args Finales para Puppeteer en Railway/Linux ***
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Crucial en entornos con /dev/shm limitado
+            '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
-            '--no-zygote', // A menudo necesario en contenedores
-            '--disable-gpu', // GPU no suele estar disponible
-            '--disable-extensions' // Evita problemas con extensiones
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions'
         ],
     },
     qrTimeout: 0,
@@ -227,12 +235,10 @@ client.on('disconnected', (reason) => { console.log('Cliente desconectado:', rea
 
 // ======== LLAMADA SEGURA A OPENAI ========
 async function safeChatCall(payload, tries = 2) {
-  // *** VALIDACIÓN PREVIA DEL PAYLOAD ***
   if (!payload || !Array.isArray(payload.messages) || payload.messages.length === 0) {
       console.error("[Error OpenAI Previo] Payload inválido:", payload);
       throw new Error("Payload inválido enviado a OpenAI.");
   }
-  // Verificar que el prompt del sistema no esté vacío o con error
   if (!payload.messages[0].content || payload.messages[0].content.startsWith("Error:")) {
       console.error("[Error OpenAI Previo] Prompt del sistema inválido:", payload.messages[0].content);
       throw new Error("Prompt del sistema inválido enviado a OpenAI.");
@@ -241,17 +247,13 @@ async function safeChatCall(payload, tries = 2) {
   for (let i = 0; i < tries; i++) {
     try {
       console.log(`[OpenAI Debug] Enviando (Intento ${i + 1})...`);
-      const messagesToLog = [ payload.messages[0], ...(payload.messages.slice(-2)) ];
-      // console.log("[OpenAI Debug] Messages (System + Last 2):", JSON.stringify(messagesToLog, null, 2)); // Descomentar si es MUY necesario
-
       const completion = await openai.chat.completions.create(payload);
-
       console.log(`[OpenAI Debug] Respuesta recibida (Intento ${i + 1})`);
       if (!completion?.choices?.[0]?.message?.content) {
           console.error('[Error OpenAI] Estructura de respuesta inesperada:', completion);
           throw new Error("Respuesta de OpenAI inválida.");
       }
-      console.log("[OpenAI Debug] Contenido Respuesta:", completion.choices[0].message.content.substring(0, 100) + "..."); // Loguear solo inicio
+      console.log("[OpenAI Debug] Contenido Respuesta:", completion.choices[0].message.content.substring(0, 100) + "...");
       return completion;
 
     } catch (e) {
@@ -290,10 +292,10 @@ client.on('message', async (msg) => {
     // Bot ON/OFF
     if (low === '/bot off') { s.botEnabled = false; setState(from, s); return msg.reply('👌 Bot desactivado.'); }
     if (low === '/bot on') { s.botEnabled = true; setState(from, s); return msg.reply('💪 Bot activado.'); }
-    if (!s.botEnabled) return;
+    if (s.botEnabled === false) return;
 
     // Demo on/off
-    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre || 'Demo'}* 💈 (Demo)\nEscríbeme como cliente.`); } // Usar nombre cargado
+    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre || 'Demo'}* 💈 (Demo)\nEscríbeme como cliente.`); }
     if (low === '/end test') { s.mode = 'cortex'; s.history = []; s.sales = { awaiting: 'confirm' }; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp.'); }
 
     // MODO BARBERÍA
@@ -302,8 +304,6 @@ client.on('message', async (msg) => {
       if (isCancellation) { /* ... (Sin cambios) ... */ }
 
       const servicioDetectado = detectServicio(processedText);
-      // const horaDetectada = detectHoraExacta(processedText); // NLU puede ser menos prioritario ahora
-      // const offset = detectHoyOMañana(processedText);
       const pideHorarioGeneral = /horario|horas|hasta que hora|a que horas|disponibilidad/i.test(low) && !detectHoraExacta(processedText) && !servicioDetectado;
       if (pideHorarioGeneral) {
           const hoyDia = now().weekday; let horarioHoy = BARBERIA_DATA.horario?.festivos||'No definido';
@@ -321,7 +321,6 @@ client.on('message', async (msg) => {
       const messages = [{ role: 'system', content: promptSystem }, ...s.history.slice(-MAX_TURNS)];
       console.log(`[Handler] Llamando OpenAI (Barbería)... User: ${from}`);
       const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 350 });
-      // No necesitamos verificar completion aquí porque safeChatCall ya lo hace o lanza error
 
       let reply = completion.choices[0].message.content?.trim() || 'No entendí, ¿puedes repetir?';
       const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
@@ -342,7 +341,6 @@ client.on('message', async (msg) => {
       console.log(`[Handler] Llamando OpenAI (Ventas)... User: ${from}`);
       const messages = [{ role: 'system', content: PROMPT_VENTAS }, ...s.history.slice(-MAX_TURNS)];
       const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 250 });
-      // No necesitamos verificar completion aquí
 
       let reply = completion.choices[0].message.content?.trim() || '¿En qué te ayudo? 🙂';
       if (!/demo|probar|prueba/i.test(low) && !/nombre|negocio|agendar/i.test(low) && s.sales?.awaiting !== 'schedule') { if (Math.random() < 0.6) reply += `\n\n${pick(CTAs)}`; }
@@ -350,7 +348,6 @@ client.on('message', async (msg) => {
     }
 
   } catch (error) {
-    // Loguear el error DETALLADO
     console.error('****** ¡ERROR CAPTURADO EN HANDLER! ******\n', error, '\n****************************************');
     try { await msg.reply('Ups, algo salió mal. Inténtalo de nuevo.'); } catch (e) { console.error("Error enviando msg de error:", e.message);}
   }
