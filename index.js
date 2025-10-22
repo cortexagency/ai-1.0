@@ -48,6 +48,49 @@ try {
   console.error("Error creando directorios:", e);
 }
 
+// --- Seed barberia_info.json if the volume has an empty file ---
+try {
+  const p = path.join(DATA_DIR, 'barberia_info.json');
+  const exists = fs.existsSync(p);
+  const size = exists ? fs.statSync(p).size : 0; // bytes
+  if (!exists || size < 10) {
+    console.warn(`[Seed] barberia_info.json vacío o ausente (size=${size}). Sembrando datos por defecto…`);
+    const seed = {
+      nombre: "Barbería La 70",
+      direccion: "Calle 70 #45-18, Belén, Medellín",
+      telefono: "+57 310 555 1234",
+      horario: {
+        lun_vie: "9:00 AM – 8:00 PM",
+        sab: "9:00 AM – 6:00 PM",
+        dom: "10:00 AM – 4:00 PM",
+        festivos: "Cerrado o solo por cita previa",
+        almuerzo_demo: { start: 13, end: 14 }
+      },
+      capacidad: { slot_base_min: 20 },
+      servicios: {
+        "corte clasico": { precio: 35000, min: 40 },
+        "corte + degradado + diseño": { precio: 55000, min: 60 },
+        "barba completa": { precio: 28000, min: 30 },
+        "corte + barba": { precio: 75000, min: 70 },
+        "afeitado tradicional": { precio: 45000, min: 45 },
+        "vip": { precio: 120000, min: 90 }
+      },
+      pagos: ["Nequi", "Daviplata", "Efectivo"],
+      faqs: [
+        { q: "¿Cómo puedo cancelar?", a: "Responde a este chat o llama al +57 310 555 1234. Cancela con 6+ horas para evitar cargo." },
+        { q: "¿Puedo cambiar la cita?", a: "Sí, reprogramamos si hay disponibilidad y avisas con 6+ horas." },
+        { q: "¿Aceptan tarjeta?", a: "Sí, datáfono, Nequi/Daviplata y efectivo (mencionado en pagos)." },
+        { q: "¿Tienen estacionamiento?", a: "Sí, 3 cupos en la parte trasera y parqueo público en la 70." }
+      ],
+      upsell: "¿Agregamos barba por $28.000? Queda en $75.000 el combo 😉"
+    };
+    fs.writeFileSync(p, JSON.stringify(seed, null, 2), 'utf8');
+    console.log("[Seed] barberia_info.json escrito (len=" + fs.statSync(p).size + ")");
+  }
+} catch (e) {
+  console.error('[Seed] Error al sembrar barberia_info.json:', e.message);
+}
+
 // --- Util de carga/guardado ---
 function loadData(filePath, defaultData = {}, isJson = true) {
   console.log(`[Debug Load] Intentando cargar: ${filePath}`);
