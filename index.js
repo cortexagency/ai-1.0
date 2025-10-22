@@ -53,10 +53,32 @@ function loadData(filePath, defaultData = {}, isJson = true) {
   console.log(`[Debug Load] Intentando cargar: ${filePath}`);
   try {
     if (fs.existsSync(filePath)) {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      console.log(`[Debug Load] Archivo encontrado: ${filePath}`);
+      let fileContent = fs.readFileSync(filePath, 'utf8');
+      console.log(`[Debug Load] Archivo encontrado: ${filePath} (len=${fileContent ? fileContent.length : 0})`);
+      // Quitar BOM y espacios invisibles
+      if (typeof fileContent === 'string') {
+        fileContent = fileContent.replace(/^\uFEFF/, '').trim();
+      }
       if (isJson) {
-        return fileContent ? JSON.parse(fileContent) : defaultData;
+        if (!fileContent) {
+          console.warn(`[Debug Load] ${path.basename(filePath)} está vacío (0 bytes tras trim). Devolviendo default.`);
+          return defaultData;
+        }
+        try {
+          return JSON.parse(fileContent);
+        } catch (parseErr) {
+          console.error(`[Error JSON.parse] ${path.basename(filePath)}: ${parseErr.message}`);
+          // NO sobrescribas el archivo original si hay error de parseo.
+          // Solo crea un .bak para inspección y devuelve default.
+          try {
+            const bak = `${filePath}.bak`;
+            fs.writeFileSync(bak, fileContent, 'utf8');
+            console.warn(`[Debug Load] Copia de respaldo guardada en ${bak}`);
+          } catch (bakErr) {
+            console.error(`[Error Backup] No se pudo crear .bak para ${path.basename(filePath)}:`, bakErr.message);
+          }
+          return defaultData;
+        }
       } else {
         return fileContent;
       }
@@ -69,11 +91,7 @@ function loadData(filePath, defaultData = {}, isJson = true) {
     }
   } catch (e) {
     console.error(`[Error Memoria Load/Parse] ${path.basename(filePath)}:`, e.message);
-    if (e instanceof SyntaxError && isJson) {
-      try { fs.writeFileSync(filePath, JSON.stringify(defaultData, null, 2), 'utf8'); console.warn(`[Memoria] Archivo JSON ${path.basename(filePath)} reseteado por error de parseo.`);} catch (w) { console.error(`[Error Memoria Fatal] No se pudo resetear ${path.basename(filePath)}:`, w.message); }
-    } else if (!fs.existsSync(filePath)) {
-      try { const contentToWrite = isJson ? JSON.stringify(defaultData, null, 2) : ''; fs.writeFileSync(filePath, contentToWrite, 'utf8'); console.warn(`[Memoria] Archivo ${path.basename(filePath)} creado tras error.`);} catch (w) { console.error(`[Error Memoria Fatal] No se pudo crear ${path.basename(filePath)} tras error:`, w.message); }
-    }
+    // No sobreescribir en caso de error desconocido; regresar default
     return defaultData;
   }
 }
