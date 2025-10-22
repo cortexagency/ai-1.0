@@ -12,15 +12,15 @@
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^17.2.3",
-    "express": "^5.1.0",         // Consider removing if not used
+    "express": "^5.1.0",
     "luxon": "^3.7.2",
-    "nodemailer": "^7.0.9",       // Consider removing if not used
+    "nodemailer": "^7.0.9", // <-- Consider removing if you deleted email code
     "openai": "^6.6.0",
     "qrcode": "^1.5.3",
-    "qrcode-terminal": "^0.12.0", // Consider removing if not used
+    "qrcode-terminal": "^0.12.0", // <-- Consider removing
     "whatsapp-web.js": "^1.34.1"
   },
-  "engines": {                    // <-- Correctly integrated here
+  "engines": {  // <-- Correctly placed INSIDE the main {}
     "node": ">=20.0.0"
   }
 }
