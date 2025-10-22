@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (Fixed: state init + voice + handlers)
+// CORTEX IA - INDEX.JS (Fixed: state init + voice + handlers + barberia_base only)
 // =========================
 require('dotenv').config();
 
@@ -30,14 +30,19 @@ const PROMPTS_DIR = path.join(__dirname, 'prompts');
 const DEMO_RESERVAS_PATH = path.join(DATA_DIR, 'demo_reservas.json');
 const USER_BOOKINGS_PATH = path.join(DATA_DIR, 'user_bookings.json');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const BARBERIA_INFO_PATH = path.join(DATA_DIR, 'barberia_info.json');
+
+// ⚠️ Importante: ahora TODO viene de prompts/barberia_base.txt (NO hay barberia_info)
 const PROMPT_VENTAS_PATH = path.join(PROMPTS_DIR, 'ventas.txt');
-const PROMPT_BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt');
+const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt');
 
 let DEMO_RESERVAS = {};
 let USER_BOOKINGS = {};
-let BARBERIA_DATA = {};
 let PROMPT_VENTAS = "";
+
+// De barberia_base.txt obtendremos:
+// - BARBERIA_DATA (objeto JSON con negocio/horario/servicios/...)
+// - PROMPT_DEMO_TEMPLATE (system_prompt)
+let BARBERIA_DATA = {};
 let PROMPT_DEMO_TEMPLATE = "";
 
 // Asegurar carpetas
@@ -46,49 +51,6 @@ try {
   if (!fs.existsSync(PROMPTS_DIR)) fs.mkdirSync(PROMPTS_DIR, { recursive: true });
 } catch (e) {
   console.error("Error creando directorios:", e);
-}
-
-// --- Seed barberia_info.json if the volume has an empty file ---
-try {
-  const p = path.join(DATA_DIR, 'barberia_info.json');
-  const exists = fs.existsSync(p);
-  const size = exists ? fs.statSync(p).size : 0; // bytes
-  if (!exists || size < 10) {
-    console.warn(`[Seed] barberia_info.json vacío o ausente (size=${size}). Sembrando datos por defecto…`);
-    const seed = {
-      nombre: "Barbería La 70",
-      direccion: "Calle 70 #45-18, Belén, Medellín",
-      telefono: "+57 310 555 1234",
-      horario: {
-        lun_vie: "9:00 AM – 8:00 PM",
-        sab: "9:00 AM – 6:00 PM",
-        dom: "10:00 AM – 4:00 PM",
-        festivos: "Cerrado o solo por cita previa",
-        almuerzo_demo: { start: 13, end: 14 }
-      },
-      capacidad: { slot_base_min: 20 },
-      servicios: {
-        "corte clasico": { precio: 35000, min: 40 },
-        "corte + degradado + diseño": { precio: 55000, min: 60 },
-        "barba completa": { precio: 28000, min: 30 },
-        "corte + barba": { precio: 75000, min: 70 },
-        "afeitado tradicional": { precio: 45000, min: 45 },
-        "vip": { precio: 120000, min: 90 }
-      },
-      pagos: ["Nequi", "Daviplata", "Efectivo"],
-      faqs: [
-        { q: "¿Cómo puedo cancelar?", a: "Responde a este chat o llama al +57 310 555 1234. Cancela con 6+ horas para evitar cargo." },
-        { q: "¿Puedo cambiar la cita?", a: "Sí, reprogramamos si hay disponibilidad y avisas con 6+ horas." },
-        { q: "¿Aceptan tarjeta?", a: "Sí, datáfono, Nequi/Daviplata y efectivo (mencionado en pagos)." },
-        { q: "¿Tienen estacionamiento?", a: "Sí, 3 cupos en la parte trasera y parqueo público en la 70." }
-      ],
-      upsell: "¿Agregamos barba por $28.000? Queda en $75.000 el combo 😉"
-    };
-    fs.writeFileSync(p, JSON.stringify(seed, null, 2), 'utf8');
-    console.log("[Seed] barberia_info.json escrito (len=" + fs.statSync(p).size + ")");
-  }
-} catch (e) {
-  console.error('[Seed] Error al sembrar barberia_info.json:', e.message);
 }
 
 // --- Util de carga/guardado ---
@@ -111,8 +73,7 @@ function loadData(filePath, defaultData = {}, isJson = true) {
           return JSON.parse(fileContent);
         } catch (parseErr) {
           console.error(`[Error JSON.parse] ${path.basename(filePath)}: ${parseErr.message}`);
-          // NO sobrescribas el archivo original si hay error de parseo.
-          // Solo crea un .bak para inspección y devuelve default.
+          // No sobreescribir. Guardar .bak y devolver default.
           try {
             const bak = `${filePath}.bak`;
             fs.writeFileSync(bak, fileContent, 'utf8');
@@ -134,7 +95,6 @@ function loadData(filePath, defaultData = {}, isJson = true) {
     }
   } catch (e) {
     console.error(`[Error Memoria Load/Parse] ${path.basename(filePath)}:`, e.message);
-    // No sobreescribir en caso de error desconocido; regresar default
     return defaultData;
   }
 }
@@ -156,26 +116,71 @@ function saveReservas() { saveData(DEMO_RESERVAS_PATH, DEMO_RESERVAS); }
 function loadUserBookings() { USER_BOOKINGS = loadData(USER_BOOKINGS_PATH, {}); console.log('[User Bookings] Cargadas'); }
 function saveUserBookings() { saveData(USER_BOOKINGS_PATH, USER_BOOKINGS); }
 
+// --- Cargar barberia_base (JSON + system_prompt) ---
+function parseFirstJsonBlock(text) {
+  // Intenta parsear todo el archivo como JSON primero
+  try { return JSON.parse(text); } catch (_) {}
+  // Si falla, intenta extraer el primer bloque { ... } nivelado
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const jsonStr = text.slice(start, i + 1);
+        try { return JSON.parse(jsonStr); } catch (_) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 function loadExternalFiles() {
   console.log("--- Cargando Archivos Externos ---");
-  BARBERIA_DATA = loadData(BARBERIA_INFO_PATH, {}, true);
-  PROMPT_VENTAS = loadData(PROMPT_VENTAS_PATH, "", false);
-  PROMPT_DEMO_TEMPLATE = loadData(PROMPT_BARBERIA_BASE_PATH, "", false);
 
-  if (!BARBERIA_DATA || typeof BARBERIA_DATA !== 'object' || Object.keys(BARBERIA_DATA).length === 0) {
-    console.error("¡ERROR FATAL! data/barberia_info.json está vacío o corrupto. Usando datos mínimos.");
-    BARBERIA_DATA = { nombre: "Demo", horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "" };
-  } else {
-    console.log("[External] barberia_info.json cargado OK.");
-  }
+  // ventas.txt (prompt de ventas)
+  PROMPT_VENTAS = loadData(PROMPT_VENTAS_PATH, "", false);
   if (!PROMPT_VENTAS || typeof PROMPT_VENTAS !== 'string' || PROMPT_VENTAS.length < 50) {
     console.error("¡ERROR FATAL! prompts/ventas.txt vacío o no cargado.");
     PROMPT_VENTAS = "Error: Prompt de ventas no disponible.";
   } else { console.log("[External] ventas.txt cargado OK."); }
-  if (!PROMPT_DEMO_TEMPLATE || typeof PROMPT_DEMO_TEMPLATE !== 'string' || PROMPT_DEMO_TEMPLATE.length < 50) {
+
+  // barberia_base.txt (JSON + system_prompt)
+  let baseRaw = loadData(BARBERIA_BASE_PATH, "", false);
+  if (!baseRaw || typeof baseRaw !== 'string' || baseRaw.length < 10) {
     console.error("¡ERROR FATAL! prompts/barberia_base.txt vacío o no cargado.");
+    BARBERIA_DATA = { negocio: { nombre: "Demo" }, horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "", capacidad: { slot_base_min: 20 } };
     PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
-  } else { console.log("[External] barberia_base.txt cargado OK."); }
+  } else {
+    const parsed = parseFirstJsonBlock(baseRaw);
+    if (!parsed || typeof parsed !== 'object') {
+      console.error("¡ERROR FATAL! No se pudo parsear JSON desde prompts/barberia_base.txt");
+      BARBERIA_DATA = { negocio: { nombre: "Demo" }, horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "", capacidad: { slot_base_min: 20 } };
+      PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
+    } else {
+      BARBERIA_DATA = parsed;
+      // Permitir compatibilidad con estructuras antiguas (nombre en raíz)
+      if (!BARBERIA_DATA.negocio) {
+        BARBERIA_DATA.negocio = {
+          nombre: BARBERIA_DATA.nombre || "Demo",
+          direccion: BARBERIA_DATA.direccion || "",
+          telefono: BARBERIA_DATA.telefono || ""
+        };
+      }
+      if (!BARBERIA_DATA.capacidad) BARBERIA_DATA.capacidad = { slot_base_min: 20 };
+      PROMPT_DEMO_TEMPLATE = BARBERIA_DATA.system_prompt || "";
+      if (!PROMPT_DEMO_TEMPLATE || PROMPT_DEMO_TEMPLATE.length < 50) {
+        console.warn("[External] system_prompt no encontrado en barberia_base.txt; se usará texto de plantilla si existiera.");
+        // Si quisieras, aquí podrías intentar extraer un bloque ```txt ... ```
+        PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
+      } else {
+        console.log("[External] barberia_base.txt cargado OK (JSON + system_prompt).");
+      }
+    }
+  }
   console.log("--- Fin Carga Archivos Externos ---");
 }
 
@@ -234,21 +239,22 @@ async function removeReserva(userId, bookingId) { return true; }
 function generarSlotsDemo(diasAdelante = 3) {
   const hoy = now();
   const out = [];
-  const slotMin = BARBERIA_DATA.capacidad?.slot_base_min || 20;
-  const almuerzo = BARBERIA_DATA.horario?.almuerzo_demo || { start: -1, end: -1 };
+  const slotMin = (BARBERIA_DATA.capacidad && BARBERIA_DATA.capacidad.slot_base_min) ? BARBERIA_DATA.capacidad.slot_base_min : 20;
+
+  // El JSON nuevo trae horario.almuerzo o horario.almuerzo_demo (compat)
+  const alm = BARBERIA_DATA.horario || {};
+  const almuerzo = (alm.almuerzo || alm.almuerzo_demo || { start: -1, end: -1 });
 
   for (let d = 0; d < diasAdelante; d++) {
     const fecha = hoy.plus({ days: d });
     const fechaStr = fecha.toFormat('yyyy-LL-dd');
     const wd = fecha.weekday;
 
+    // Seleccionar horario del día
     let openStr = null, closeStr = null;
-    if (BARBERIA_DATA.horario) {
-      if (wd >= 1 && wd <= 5 && BARBERIA_DATA.horario.lun_vie) [openStr, closeStr] = BARBERIA_DATA.horario.lun_vie.split('–').map(s => s.trim());
-      else if (wd === 6 && BARBERIA_DATA.horario.sab) [openStr, closeStr] = BARBERIA_DATA.horario.sab.split('–').map(s => s.trim());
-      else if (wd === 7 && BARBERIA_DATA.horario.dom) [openStr, closeStr] = BARBERIA_DATA.horario.dom.split('–').map(s => s.trim());
-      else openStr = BARBERIA_DATA.horario.festivos || null;
-    }
+    if (wd >= 1 && wd <= 5 && alm.lun_vie) [openStr, closeStr] = alm.lun_vie.split('–').map(s => s.trim());
+    else if (wd === 6 && alm.sab) [openStr, closeStr] = alm.sab.split('–').map(s => s.trim());
+    else if (wd === 7 && alm.dom) [openStr, closeStr] = alm.dom.split('–').map(s => s.trim());
     if (!openStr || !closeStr) { console.log(`[Slots] No horario para ${fechaStr}`); continue; }
 
     const open = DateTime.fromFormat(openStr, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day });
@@ -280,7 +286,7 @@ function generarSlotsDemo(diasAdelante = 3) {
 // ===== Prompt de demo barbería =====
 function getPromptDemoBarberia(slotsDisponibles) {
   if (!PROMPT_DEMO_TEMPLATE || PROMPT_DEMO_TEMPLATE.startsWith("Error:")) return "Error: Plantilla prompt demo no cargada.";
-  const hoy = now().setLocale('es').toFormat('cccc d LLLL, yyyy');
+  const hoyFmt = now().setLocale('es').toFormat('cccc d LLLL, yyyy');
   const hoyDiaSemana = now().weekday;
 
   const servicios = BARBERIA_DATA.servicios || {};
@@ -288,32 +294,44 @@ function getPromptDemoBarberia(slotsDisponibles) {
   const faqs = BARBERIA_DATA.faqs || [];
   const pagos = BARBERIA_DATA.pagos || [];
 
-  const serviciosTxt = Object.entries(servicios).map(([k, v]) => `- ${k}: $${(v.precio || 0).toLocaleString('es-CO')} (${v.min || 'N/A'} min)`).join('\n');
+  const serviciosTxt = Object.entries(servicios)
+    .map(([k, v]) => `- ${k}: $${(v.precio || 0).toLocaleString('es-CO')} (${v.min || 'N/A'} min)`)
+    .join('\n');
+
   let slotsTxt = "Lo siento, no veo cupos disponibles.";
   if (slotsDisponibles?.length) {
-    slotsTxt = slotsDisponibles.map(d => `${DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d')}: ${d.horas.join(', ')}`).join('\n');
+    slotsTxt = slotsDisponibles
+      .map(d => `${DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d')}: ${d.horas.join(', ')}`)
+      .join('\n');
   }
 
-  let horarioHoy = horario.festivos || "No disponible";
+  let horarioHoy = "No disponible";
   if (hoyDiaSemana >= 1 && hoyDiaSemana <= 5) horarioHoy = horario.lun_vie || horarioHoy;
   else if (hoyDiaSemana === 6) horarioHoy = horario.sab || horarioHoy;
   else if (hoyDiaSemana === 7) horarioHoy = horario.dom || horarioHoy;
 
   const faqsBarberia = faqs.map(f => `- P: ${f.q}\n  R: ${f.a}`).join('\n');
 
+  // Nombre/dirección/telefono desde negocio (compat con plano)
+  const negocio = BARBERIA_DATA.negocio || {};
+  const nombreBarberia = negocio.nombre || BARBERIA_DATA.nombre || "la barbería";
+  const direccionBarberia = negocio.direccion || BARBERIA_DATA.direccion || "N/A";
+  const telefonoBarberia = negocio.telefono || BARBERIA_DATA.telefono || "N/A";
+
   let finalPrompt = PROMPT_DEMO_TEMPLATE;
-  finalPrompt = finalPrompt.replace(/{nombreBarberia}/g, BARBERIA_DATA.nombre || "la barbería");
-  finalPrompt = finalPrompt.replace(/{hoy}/g, hoy);
+  finalPrompt = finalPrompt.replace(/{nombreBarberia}/g, nombreBarberia);
+  finalPrompt = finalPrompt.replace(/{hoy}/g, hoyFmt);
   finalPrompt = finalPrompt.replace(/{horarioHoy}/g, horarioHoy);
   finalPrompt = finalPrompt.replace(/{slotsTxt}/g, slotsTxt || "No disponible");
   finalPrompt = finalPrompt.replace(/{horarioLv}/g, horario.lun_vie || "N/A");
   finalPrompt = finalPrompt.replace(/{horarioS}/g, horario.sab || "N/A");
   finalPrompt = finalPrompt.replace(/{horarioD}/g, horario.dom || "N/A");
   finalPrompt = finalPrompt.replace(/{serviciosTxt}/g, serviciosTxt || "N/A");
-  finalPrompt = finalPrompt.replace(/{direccionBarberia}/g, BARBERIA_DATA.direccion || "N/A");
+  finalPrompt = finalPrompt.replace(/{direccionBarberia}/g, direccionBarberia);
   finalPrompt = finalPrompt.replace(/{pagosBarberia}/g, pagos.join(', ') || "N/A");
   finalPrompt = finalPrompt.replace(/{faqsBarberia}/g, faqsBarberia || "N/A");
   finalPrompt = finalPrompt.replace(/{upsellText}/g, BARBERIA_DATA.upsell || "");
+  finalPrompt = finalPrompt.replace(/{telefonoBarberia}/g, telefonoBarberia);
   return finalPrompt;
 }
 
@@ -449,7 +467,11 @@ client.on('message', async (msg) => {
     if (low === '/bot on')  { s.botEnabled = true;  setState(from, s); return msg.reply('💪 Bot activado.'); }
     if (s.botEnabled === false) return;
 
-    if (low === '/start test') { s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s); return msg.reply(`*${BARBERIA_DATA.nombre || 'Demo'}* 💈 (Demo)\nEscríbeme como cliente.`); }
+    if (low === '/start test') {
+      s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s);
+      const nombre = (BARBERIA_DATA.negocio && BARBERIA_DATA.negocio.nombre) ? BARBERIA_DATA.negocio.nombre : (BARBERIA_DATA.nombre || 'Demo');
+      return msg.reply(`*${nombre}* 💈 (Demo)\nEscríbeme como cliente.`);
+    }
     if (low === '/end test')   { s.mode = 'cortex';   s.history = []; s.sales = { awaiting: 'confirm' }; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp.'); }
 
     // ======= MODO BARBERÍA =======
