@@ -15,8 +15,9 @@ const express = require('express');
 
 // ========== CONFIGURACIÓN ==========
 // *** CONFIGURACIÓN UNIFICADA DEL DUEÑO ***
+// Soporta tanto OWNER_NUMBER como OWNER_WHATSAPP_ID
 let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554'; // Número sin @c.us
-let OWNER_CHAT_ID = `${OWNER_NUMBER}@c.us`; // Construido automáticamente
+let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`; // Construido automáticamente o desde env
 
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
@@ -215,8 +216,26 @@ async function initDataFiles() {
 
 // ========== LECTURA/ESCRITURA JSON ==========
 async function readJson(file, fallback) {
-  try { return JSON.parse(await fs.readFile(file, 'utf8')); }
-  catch { return fallback; }
+  try { 
+    const content = await fs.readFile(file, 'utf8');
+    const parsed = JSON.parse(content);
+    
+    // Validar que el tipo coincida con el fallback
+    if (Array.isArray(fallback) && !Array.isArray(parsed)) {
+      console.warn(`⚠️ ${file} no es un array, usando fallback`);
+      return fallback;
+    }
+    if (typeof fallback === 'object' && !Array.isArray(fallback) && Array.isArray(parsed)) {
+      console.warn(`⚠️ ${file} no es un objeto, usando fallback`);
+      return fallback;
+    }
+    
+    return parsed;
+  }
+  catch (e) { 
+    console.warn(`⚠️ Error leyendo ${file}: ${e.message}, usando fallback`);
+    return fallback; 
+  }
 }
 
 async function writeJson(file, data) {
@@ -353,13 +372,19 @@ async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
   const slotsReservados = reservas[fecha] || [];
   const slotsNecesarios = calcularSlotsUsados(horaInicio, duracionMin);
   
+  console.log(`[DISPONIBILIDAD] Fecha: ${fecha}, Hora: ${horaInicio}, Duración: ${duracionMin}min`);
+  console.log(`[DISPONIBILIDAD] Slots necesarios:`, slotsNecesarios);
+  console.log(`[DISPONIBILIDAD] Slots reservados:`, slotsReservados);
+  
   // Verificar colisión
   for (const slot of slotsNecesarios) {
     if (slotsReservados.includes(slot)) {
+      console.log(`[DISPONIBILIDAD] ❌ COLISIÓN en slot: ${slot}`);
       return { disponible: false, slots: slotsNecesarios, colision: slot };
     }
   }
   
+  console.log(`[DISPONIBILIDAD] ✅ DISPONIBLE`);
   return { disponible: true, slots: slotsNecesarios };
 }
 
@@ -385,9 +410,20 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const minutoInicio = hInicio * 60 + mInicio;
   const minutoFin = hFin * 60 + mFin;
   
+  // NUEVO: Obtener hora actual para no sugerir horarios pasados
+  const ahora = now();
+  const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
+  const esHoy = fechaConsulta.hasSame(ahora, 'day');
+  
+  let minutoActual = 0;
+  if (esHoy) {
+    // Si es hoy, empezar desde la hora actual + 20 min (buffer)
+    minutoActual = ahora.hour * 60 + ahora.minute + 20;
+  }
+  
   const alternativas = [];
   
-  for (let m = minutoInicio; m < minutoFin - duracionMin; m += 20) {
+  for (let m = Math.max(minutoInicio, minutoActual); m < minutoFin - duracionMin; m += 20) {
     const hh = Math.floor(m / 60);
     const mm = m % 60;
     const horaStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
@@ -445,8 +481,15 @@ async function procesarTags(mensaje, chatId) {
       bookingData.status = 'confirmed';
 
       const bookings = await readBookings();
-      bookings.push(bookingData);
-      await writeBookings(bookings);
+      
+      // Asegurar que bookings es un array
+      if (!Array.isArray(bookings)) {
+        console.error('⚠️ bookings no es un array, reinicializando...');
+        await writeBookings([bookingData]);
+      } else {
+        bookings.push(bookingData);
+        await writeBookings(bookings);
+      }
 
       // NUEVO: Guardar todos los slots ocupados
       const reservas = await readReservas();
@@ -1121,7 +1164,8 @@ async function chatWithAI(userMessage, userId, chatId) {
     const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
     
     const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}.` + 
-      `\nReglas: 1.Pregunta servicio 2.Da precio/duración 3.Pide día/hora 4.Si confirman hora pide nombre 5.Confirma y emite <BOOKING:{...}>.` + 
+      `\nReglas para agendar: 1.Pregunta servicio 2.Da precio/duración 3.Pide día/hora 4.Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR 5.Si no te han dado nombre, pide nombre completo 6.Confirma y emite <BOOKING:{...}>.` + 
+      `\nIMPORTANTE: Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.` +
       `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
     
     systemPrompt = (plantilla || fallback)
