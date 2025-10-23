@@ -426,11 +426,16 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
-  const esHoy = fechaConsulta.hasSame(ahora, 'day');
+  
+  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
+  const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
   
   let minutoActual = minutoInicio;
   if (esHoy) {
-    minutoActual = Math.max(minutoInicio, ahora.hour * 60 + ahora.minute + 20);
+    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
+    const minAhora = ahora.hour * 60 + ahora.minute + 1;
+    const proximoSlot = Math.ceil(minAhora / 20) * 20;
+    minutoActual = Math.max(minutoInicio, proximoSlot);
   }
   
   const alternativas = [];
@@ -482,14 +487,20 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
-  const esHoy = fechaConsulta.hasSame(ahora, 'day');
   
-  // 🔥 CORRECCIÓN CRÍTICA: Si es HOY, empezar desde hora actual + buffer
+  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
+  const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
+  
   let minutoBusqueda = minutoInicio;
   if (esHoy) {
-    const minAhora = ahora.hour * 60 + ahora.minute;
-    // Buscar desde el SIGUIENTE slot de 20min después de ahora
-    minutoBusqueda = Math.max(minutoInicio, Math.ceil((minAhora + 1) / 20) * 20);
+    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
+    // Esto evita ofrecer 4:00 PM a las 4:00 PM en punto (ofrecerá 4:20 PM)
+    // Y evita ofrecer 4:00 PM a las 4:32 PM (ofrecerá 4:40 PM)
+    const minAhora = ahora.hour * 60 + ahora.minute + 1; // +1 min buffer
+    const proximoSlot = Math.ceil(minAhora / 20) * 20;
+    minutoBusqueda = Math.max(minutoInicio, proximoSlot);
+    
+    console.log(`[Slots Hoy] Hora actual: ${ahora.toFormat('HH:mm')} (${minAhora-1} min). Próximo slot: ${proximoSlot} min.`);
   }
   
   const alternativas = [];
@@ -683,16 +694,13 @@ async function procesarTags(mensaje, chatId) {
 // ========== NOTIFICAR AL DUEÑO ==========
 async function notificarDueno(txt, fromChatId = null) {
   try {
-    // No notificar si el que envía el mensaje ES el dueño
-    if (fromChatId && fromChatId === OWNER_CHAT_ID) {
-      console.log('[ℹ️ NOTIFICACIÓN] No se notifica al dueño porque el mensaje viene del dueño mismo');
-      console.log(`[ℹ️ NOTIFICACIÓN] fromChatId: ${fromChatId} === OWNER_CHAT_ID: ${OWNER_CHAT_ID}`);
-      return;
-    }
+    // 🔥 CORRECCIÓN 23-OCT 4:37 PM: Notificar al dueño SIEMPRE.
+    // El 'if' anterior bloqueaba notificaciones si el dueño mismo cancelaba,
+    // lo cual es confuso. Ahora siempre se notifica para confirmar la acción.
     
     console.log(`[📤 NOTIFICACIÓN] Enviando al dueño: ${OWNER_CHAT_ID}`);
     console.log(`[📤 NOTIFICACIÓN] Contenido: ${txt.substring(0, 100)}...`);
-    console.log(`[📤 NOTIFICACIÓN] fromChatId: ${fromChatId}`);
+    console.log(`[📤 NOTIFICACIÓN] fromChatId (quien originó): ${fromChatId}`);
     
     await client.sendMessage(OWNER_CHAT_ID, txt); 
     console.log('[✅ NOTIFICACIÓN] Enviada correctamente'); 
