@@ -563,9 +563,14 @@ async function procesarTags(mensaje, chatId) {
           await writeReservas(reservas);
         }
         
+        // =======================
+        // == CORRECCIÓN AQUÍ ==
+        // =======================
+        // Se usa 'chatId' (quién está hablando) en lugar de 'b.chatId' (quién reservó)
+        // para que la lógica de 'notificarDueno' sea consistente.
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`,
-          b.chatId
+          chatId 
         );
         
         console.log('✅ Booking cancelado:', cancelData.id);
@@ -836,7 +841,7 @@ async function programarMensajePersonalizado(args, fromChatId) {
     
     const fechaLegible = fechaHoraDT.setLocale('es').toFormat('EEEE d \'de\' MMMM \'a las\' HH:mm');
     
-    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automáticamente.`;
+    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automatically.`;
     
   } catch (error) {
     console.error('❌ Error en programarMensajePersonalizado:', error);
