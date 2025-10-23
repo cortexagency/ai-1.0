@@ -14,10 +14,8 @@ const { DateTime } = require('luxon');
 const express = require('express');
 
 // ========== CONFIGURACIÓN ==========
-// *** CONFIGURACIÓN UNIFICADA DEL DUEÑO ***
-// Soporta tanto OWNER_NUMBER como OWNER_WHATSAPP_ID
-let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554'; // Número sin @c.us
-let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`; // Construido automáticamente o desde env
+let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554';
+let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
@@ -220,7 +218,6 @@ async function readJson(file, fallback) {
     const content = await fs.readFile(file, 'utf8');
     const parsed = JSON.parse(content);
     
-    // Validar que el tipo coincida con el fallback
     if (Array.isArray(fallback) && !Array.isArray(parsed)) {
       console.warn(`⚠️ ${file} no es un array, usando fallback`);
       return fallback;
@@ -350,7 +347,7 @@ function getUserState(userId) {
   return userStates.get(userId);
 }
 
-// ========== SLOTS (NUEVO: ANTI DOBLE-BOOKING) ==========
+// ========== SLOTS ==========
 function calcularSlotsUsados(horaInicio, duracionMin) { 
   const base = 20; 
   const blocks = Math.ceil(duracionMin / base); 
@@ -366,7 +363,6 @@ function calcularSlotsUsados(horaInicio, duracionMin) {
   return out; 
 }
 
-// NUEVO: Verificar disponibilidad de slots
 async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
   const reservas = await readReservas();
   const slotsReservados = reservas[fecha] || [];
@@ -376,7 +372,6 @@ async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
   console.log(`[DISPONIBILIDAD] Slots necesarios:`, slotsNecesarios);
   console.log(`[DISPONIBILIDAD] Slots reservados:`, slotsReservados);
   
-  // Verificar colisión
   for (const slot of slotsNecesarios) {
     if (slotsReservados.includes(slot)) {
       console.log(`[DISPONIBILIDAD] ❌ COLISIÓN en slot: ${slot}`);
@@ -388,7 +383,6 @@ async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
   return { disponible: true, slots: slotsNecesarios };
 }
 
-// NUEVO: Sugerir horarios alternativos
 async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const reservas = await readReservas();
   const slotsReservados = reservas[fecha] || [];
@@ -401,7 +395,6 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   else if (hoy.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
   else horarioStr = horario.lun_vie || '9:00-20:00';
   
-  // Validación robusta del horario
   if (!horarioStr || horarioStr.toLowerCase() === 'cerrado' || !horarioStr.includes('-')) {
     console.warn(`⚠️ Horario inválido para ${fecha}: "${horarioStr}"`);
     return [];
@@ -415,7 +408,6 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   
   const [inicio, fin] = partes.map(s => s.trim());
   
-  // Validar formato de horas
   if (!inicio.includes(':') || !fin.includes(':')) {
     console.warn(`⚠️ Formato de hora inválido: inicio="${inicio}", fin="${fin}"`);
     return [];
@@ -424,7 +416,6 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const [hInicio, mInicio] = inicio.split(':').map(Number);
   const [hFin, mFin] = fin.split(':').map(Number);
   
-  // Validar que sean números válidos
   if (isNaN(hInicio) || isNaN(mInicio) || isNaN(hFin) || isNaN(mFin)) {
     console.warn(`⚠️ Horas no numéricas: ${inicio} - ${fin}`);
     return [];
@@ -433,20 +424,18 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const minutoInicio = hInicio * 60 + mInicio;
   const minutoFin = hFin * 60 + mFin;
   
-  // NUEVO: Obtener hora actual para no sugerir horarios pasados
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   const esHoy = fechaConsulta.hasSame(ahora, 'day');
   
-  let minutoActual = 0;
+  let minutoActual = minutoInicio;
   if (esHoy) {
-    // Si es hoy, empezar desde la hora actual + 20 min (buffer)
-    minutoActual = ahora.hour * 60 + ahora.minute + 20;
+    minutoActual = Math.max(minutoInicio, ahora.hour * 60 + ahora.minute + 20);
   }
   
   const alternativas = [];
   
-  for (let m = Math.max(minutoInicio, minutoActual); m < minutoFin - duracionMin; m += 20) {
+  for (let m = minutoActual; m < minutoFin - duracionMin; m += 20) {
     const hh = Math.floor(m / 60);
     const mm = m % 60;
     const horaStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
@@ -461,10 +450,7 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   return alternativas;
 }
 
-// =======================
-// == CORRECCIÓN BUG 1 ==
-// =======================
-// NUEVA FUNCIÓN: Genera la lista de slots REALES disponibles para hoy
+// 🔥 FUNCIÓN CORREGIDA: Genera slots disponibles HOY (sin horas pasadas)
 async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const reservas = await readReservas();
   const slotsReservados = reservas[fecha] || [];
@@ -498,27 +484,24 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   const esHoy = fechaConsulta.hasSame(ahora, 'day');
   
-  let minutoActual = 0;
+  // 🔥 CORRECCIÓN CRÍTICA: Si es HOY, empezar desde hora actual + buffer
+  let minutoBusqueda = minutoInicio;
   if (esHoy) {
     const minAhora = ahora.hour * 60 + ahora.minute;
-    // Redondear al *siguiente* slot de 20 min + 1 min de buffer
-    minutoActual = Math.ceil((minAhora + 1) / 20) * 20; 
+    // Buscar desde el SIGUIENTE slot de 20min después de ahora
+    minutoBusqueda = Math.max(minutoInicio, Math.ceil((minAhora + 1) / 20) * 20);
   }
   
   const alternativas = [];
-  const baseIntervalo = 20; // Slots de 20 min
   
-  let m = Math.max(minutoInicio, minutoActual);
-  if (m % baseIntervalo !== 0) {
-     m = Math.ceil(m / baseIntervalo) * baseIntervalo;
-  }
-
-  while (m <= minutoFin - duracionMinDefault) {
+  // Buscar slots disponibles
+  for (let m = minutoBusqueda; m <= minutoFin - duracionMinDefault; m += 20) {
     const horaStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
     
-    // Verificar si este slot está disponible
+    // Verificar disponibilidad del slot
     const slotsNecesarios = calcularSlotsUsados(horaStr, duracionMinDefault);
     let colision = false;
+    
     for (const slot of slotsNecesarios) {
       if (slotsReservados.includes(slot)) {
         colision = true;
@@ -526,26 +509,23 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
       }
       // Verificar que no se pase del cierre
       const [slotH, slotM] = slot.split(':').map(Number);
-      if (slotH * 60 + slotM >= minutoFin) {
-          colision = true;
-          break;
+      if (slotH * 60 + slotM > minutoFin) {
+        colision = true;
+        break;
       }
     }
     
     if (!colision) {
-      alternativas.push(formatearHora(horaStr)); // Agregar hora 12h
+      alternativas.push(formatearHora(horaStr));
     }
-    
-    m += baseIntervalo; // Siguiente slot
   }
   
   if (alternativas.length === 0) {
     return 'Ya no quedan cupos disponibles para hoy.';
   }
   
-  return `Horarios disponibles HOY: ${alternativas.join(', ')}.`;
+  return `${alternativas.join(', ')}`;
 }
-
 
 // ========== TAGS ==========
 async function procesarTags(mensaje, chatId) {
@@ -556,7 +536,6 @@ async function procesarTags(mensaje, chatId) {
     try {
       const bookingData = JSON.parse(bookingMatch[1]);
       
-      // NUEVO: Verificar disponibilidad antes de guardar
       const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
       const check = await verificarDisponibilidad(
         bookingData.fecha, 
@@ -565,7 +544,6 @@ async function procesarTags(mensaje, chatId) {
       );
       
       if (!check.disponible) {
-        // Horario no disponible - sugerir alternativas
         const alternativas = await sugerirHorariosAlternativos(bookingData.fecha, duracionMin);
         
         let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
@@ -583,7 +561,6 @@ async function procesarTags(mensaje, chatId) {
         return respuesta;
       }
       
-      // Disponible - guardar booking
       bookingData.id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       bookingData.chatId = chatId;
       bookingData.createdAt = new Date().toISOString();
@@ -591,7 +568,6 @@ async function procesarTags(mensaje, chatId) {
 
       const bookings = await readBookings();
       
-      // Asegurar que bookings es un array
       if (!Array.isArray(bookings)) {
         console.error('⚠️ bookings no es un array, reinicializando...');
         await writeBookings([bookingData]);
@@ -600,7 +576,6 @@ async function procesarTags(mensaje, chatId) {
         await writeBookings(bookings);
       }
 
-      // NUEVO: Guardar todos los slots ocupados
       const reservas = await readReservas();
       reservas[bookingData.fecha] = reservas[bookingData.fecha] || [];
       
@@ -632,75 +607,72 @@ async function procesarTags(mensaje, chatId) {
   if (cancelMatch) {
     try {
       const cancelData = JSON.parse(cancelMatch[1]);
-      console.log('[CANCELACIÓN] Datos recibidos:', cancelData);
+      console.log('[🔥 CANCELACIÓN] Datos recibidos:', JSON.stringify(cancelData, null, 2));
       
       const bookings = await readBookings();
-      console.log('[CANCELACIÓN] Total de citas en sistema:', bookings.length);
+      console.log('[🔥 CANCELACIÓN] Total de citas en sistema:', bookings.length);
       
-      // Buscar cita por ID o por datos (nombre, fecha, hora)
+      // 🔥 BÚSQUEDA MEJORADA: Sin normalización agresiva
       let b = null;
+      
       if (cancelData.id) {
-        console.log('[CANCELACIÓN] Buscando por ID:', cancelData.id);
-        b = bookings.find(x => x.id === cancelData.id);
+        console.log('[🔥 CANCELACIÓN] Buscando por ID:', cancelData.id);
+        b = bookings.find(x => x.id === cancelData.id && x.status !== 'cancelled');
       } else if (cancelData.nombreCliente && cancelData.fecha && cancelData.hora_inicio) {
-        console.log('[CANCELACIÓN] Buscando por nombre/fecha/hora:', cancelData);
+        console.log('[🔥 CANCELACIÓN] Buscando por nombre/fecha/hora');
         
-        // Normalizar el nombre para búsqueda (minúsculas, sin tildes)
-        const nombreBuscar = cancelData.nombreCliente.toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const nombreLower = cancelData.nombreCliente.toLowerCase().trim();
         
         b = bookings.find(x => {
-          const nombreCita = x.nombreCliente.toLowerCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          if (x.status === 'cancelled') return false;
           
-          const matchNombre = nombreCita.includes(nombreBuscar) || nombreBuscar.includes(nombreCita);
+          const nombreCitaLower = x.nombreCliente.toLowerCase().trim();
+          
+          // Match más flexible: contiene o es contenido
+          const matchNombre = nombreCitaLower.includes(nombreLower) || nombreLower.includes(nombreCitaLower);
           const matchFecha = x.fecha === cancelData.fecha;
           const matchHora = x.hora_inicio === cancelData.hora_inicio;
-          const activa = x.status !== 'cancelled';
           
-          console.log(`[CANCELACIÓN] Comparando con cita:`, {
-            nombreCita: x.nombreCliente,
-            nombreBuscar: cancelData.nombreCliente,
+          console.log(`[🔥 CANCELACIÓN] Comparando:`, {
+            citaNombre: x.nombreCliente,
+            buscando: cancelData.nombreCliente,
             matchNombre,
             matchFecha,
-            matchHora,
-            activa
+            matchHora
           });
           
-          return matchNombre && matchFecha && matchHora && activa;
+          return matchNombre && matchFecha && matchHora;
         });
       }
       
       if (b) {
-        console.log('[CANCELACIÓN] ✅ Cita encontrada:', b.id);
+        console.log('[✅ CANCELACIÓN] Cita encontrada:', b.id);
         b.status = 'cancelled';
         await writeBookings(bookings);
         
-        // NUEVO: Liberar todos los slots
+        // Liberar slots
         const reservas = await readReservas();
         if (reservas[b.fecha]) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
           const slotsOcupados = calcularSlotsUsados(b.hora_inicio, duracionMin);
           
-          console.log('[CANCELACIÓN] Liberando slots:', slotsOcupados);
+          console.log('[🔥 CANCELACIÓN] Liberando slots:', slotsOcupados);
           reservas[b.fecha] = reservas[b.fecha].filter(slot => !slotsOcupados.includes(slot));
           await writeReservas(reservas);
         }
         
-        // SIEMPRE notificar al dueño (se filtra internamente si el mensaje viene del dueño)
-        console.log('[CANCELACIÓN] Enviando notificación al dueño...');
-        await notificarDueno(
-          `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`,
-          chatId 
-        );
+        // 🔥 NOTIFICAR AL DUEÑO (SIEMPRE, se filtra dentro de notificarDueno)
+        console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
+        const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
+        await notificarDueno(textoNotificacion, chatId);
         
-        console.log('✅ Booking cancelado:', b.id);
+        console.log('[✅ CANCELACIÓN] Booking cancelado:', b.id);
       } else {
-        console.warn('[CANCELACIÓN] ⚠️ No se encontró cita con datos:', cancelData);
+        console.warn('[⚠️ CANCELACIÓN] No se encontró cita con datos:', cancelData);
         return "No pude encontrar la cita que mencionas para cancelar. ¿Puedes confirmar el nombre, fecha y hora exactos?";
       }
     } catch (e) { 
-      console.error('[CANCELACIÓN] Error parseando:', e); 
+      console.error('[❌ CANCELACIÓN] Error:', e.message, e.stack); 
     }
     return mensaje.replace(/<CANCELLED:[^>]+>/, '').trim();
   }
@@ -713,19 +685,22 @@ async function notificarDueno(txt, fromChatId = null) {
   try {
     // No notificar si el que envía el mensaje ES el dueño
     if (fromChatId && fromChatId === OWNER_CHAT_ID) {
-      console.log('ℹ️ No se notifica al dueño porque el mensaje viene del dueño mismo');
+      console.log('[ℹ️ NOTIFICACIÓN] No se notifica al dueño porque el mensaje viene del dueño mismo');
+      console.log(`[ℹ️ NOTIFICACIÓN] fromChatId: ${fromChatId} === OWNER_CHAT_ID: ${OWNER_CHAT_ID}`);
       return;
     }
     
-    console.log(`📤 Enviando notificación al dueño: ${OWNER_CHAT_ID}`);
-    console.log(`📤 Contenido: ${txt.substring(0, 100)}...`);
+    console.log(`[📤 NOTIFICACIÓN] Enviando al dueño: ${OWNER_CHAT_ID}`);
+    console.log(`[📤 NOTIFICACIÓN] Contenido: ${txt.substring(0, 100)}...`);
+    console.log(`[📤 NOTIFICACIÓN] fromChatId: ${fromChatId}`);
+    
     await client.sendMessage(OWNER_CHAT_ID, txt); 
-    console.log('✅ Notificación enviada al dueño'); 
+    console.log('[✅ NOTIFICACIÓN] Enviada correctamente'); 
   }
   catch (e) { 
-    console.error('❌ Error notificando al dueño:', e.message);
-    console.error('   OWNER_CHAT_ID:', OWNER_CHAT_ID);
-    console.error('   fromChatId:', fromChatId);
+    console.error('[❌ NOTIFICACIÓN] Error:', e.message);
+    console.error('[❌ NOTIFICACIÓN] OWNER_CHAT_ID:', OWNER_CHAT_ID);
+    console.error('[❌ NOTIFICACIÓN] fromChatId:', fromChatId);
   }
 }
 
@@ -885,7 +860,6 @@ async function mostrarReservas(chatId) {
     const citasFuturas = bookings.filter(b => {
       if (b.status === 'cancelled') return false;
       
-      // Crear DateTime completo con fecha y hora
       const [year, month, day] = b.fecha.split('-').map(Number);
       const [hour, minute] = b.hora_inicio.split(':').map(Number);
       const fechaHoraCita = DateTime.fromObject(
@@ -893,7 +867,6 @@ async function mostrarReservas(chatId) {
         { zone: TIMEZONE }
       );
       
-      // Solo mostrar citas futuras (fecha + hora)
       return fechaHoraCita > ahora;
     });
     
@@ -976,7 +949,7 @@ async function programarMensajePersonalizado(args, fromChatId) {
   }
 }
 
-// ========== NUEVOS COMANDOS DE CONFIGURACIÓN (SOLO DUEÑO) ==========
+// ========== COMANDOS DE CONFIGURACIÓN ==========
 function deepMerge(target, source) {
   for (const key in source) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
@@ -1183,7 +1156,7 @@ function mostrarAyuda(fromChatId) {
   return ayuda;
 }
 
-// ========== TRANSCRIPCIÓN DE AUDIO (Whisper) ==========
+// ========== TRANSCRIPCIÓN DE AUDIO ==========
 async function transcribeVoiceFromMsg(msg) {
   try {
     const media = await msg.downloadMedia();
@@ -1215,38 +1188,31 @@ async function transcribeVoiceFromMsg(msg) {
 async function chatWithAI(userMessage, userId, chatId) {
   const state = getUserState(userId);
 
-  // ========== COMANDOS ESPECIALES ==========
   const msgLower = userMessage.toLowerCase();
   
-  // Comando /ayuda
   if (msgLower.includes('/ayuda') || msgLower.includes('/help')) {
     return mostrarAyuda(chatId);
   }
   
-  // Comando /bot off
   if (msgLower.includes('/bot off')) { 
     state.botEnabled = false; 
     return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.'; 
   }
   
-  // Comando /bot on
   if (msgLower.includes('/bot on')) { 
     state.botEnabled = true; 
     return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪'; 
   }
   
-  // Comando /show bookings
   if (msgLower.includes('/show bookings')) { 
     return await mostrarReservas(chatId); 
   }
   
-  // Comando /send later
   if (msgLower.startsWith('/send later')) { 
     const args = userMessage.replace(/\/send later/i, '').trim(); 
     return await programarMensajePersonalizado(args, chatId); 
   }
   
-  // NUEVOS COMANDOS DE CONFIGURACIÓN
   if (msgLower.startsWith('/config reload')) {
     return await comandoConfigReload(chatId);
   }
@@ -1276,24 +1242,20 @@ async function chatWithAI(userMessage, userId, chatId) {
     return await comandoSetOwner(args, chatId);
   }
 
-  // Si el bot está desactivado, no responder
   if (!state.botEnabled) return null;
 
-  // Comando /start test
   if (msgLower.includes('/start test')) { 
     state.mode = 'demo'; 
     state.conversationHistory = []; 
     return '✅ *Demo activada*\n\nAhora hablas con el Asistente Cortex Barbershop. Prueba agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.'; 
   }
   
-  // Comando /end test
   if (msgLower.includes('/end test')) { 
     state.mode = 'sales'; 
     state.conversationHistory = []; 
     return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?'; 
   }
 
-  // Detectar emergencias
   const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
   const esEmergencia = palabrasEmergencia.some(p => msgLower.includes(p));
   
@@ -1301,17 +1263,14 @@ async function chatWithAI(userMessage, userId, chatId) {
     await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`, chatId);
   }
 
-  // ========== CONSTRUIR SYSTEM PROMPT ==========
   let systemPrompt = '';
   
   if (state.mode === 'demo') {
-    // MODO DEMO: Asistente de Barbería
     const hoy = now(); 
     const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
     const fechaISO = hoy.toFormat('yyyy-MM-dd');
     
-    // Generar la lista de slots disponibles REALES, filtrando horas pasadas
-    const duracionDefault = 40; // Duración base para calcular la lista de slots
+    const duracionDefault = 40;
     const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
     
     const horario = BARBERIA_CONFIG?.horario || {}; 
@@ -1335,47 +1294,35 @@ async function chatWithAI(userMessage, userId, chatId) {
     ) || 'Cerrado';
     
     const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
-    
-    // Obtener hora actual en formato legible
     const horaActual = hoy.toFormat('h:mm a');
     
-    // PROMPT MEJORADO CON INSTRUCCIONES DE CANCELACIÓN
-    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
+    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
 
 **REGLAS PARA AGENDAR:**
 1. Pregunta qué servicio necesita
 2. Da precio y duración del servicio
-3. Ofrece SOLO los horarios de la lista de DISPONIBLES (abajo)
-4. Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR
+3. Ofrece SOLO los horarios de la lista DISPONIBLE (abajo)
+4. Si confirman hora, EXTRAE EL NOMBRE si ya lo dijeron (ej: "para Samuel") - NO LO VUELVAS A PREGUNTAR
 5. Si no te han dado nombre, pide nombre completo
-6. Confirma y emite: <BOOKING:{"nombreCliente":"(nombre)","servicio":"(servicio)","fecha":"${fechaISO}","hora_inicio":"(hh:mm en formato 24h)"}>
+6. Confirma y emite: <BOOKING:{"nombreCliente":"(nombre)","servicio":"(servicio)","fecha":"${fechaISO}","hora_inicio":"(hh:mm formato 24h)"}>
 
-**REGLAS PARA CANCELAR CITAS:**
-1. Pide: nombre completo, fecha exacta (YYYY-MM-DD) y hora exacta (HH:MM formato 24h)
-2. Confirma los datos con el cliente
-3. Emite EXACTAMENTE: <CANCELLED:{"nombreCliente":"(nombre exacto)","fecha":"(yyyy-mm-dd)","hora_inicio":"(hh:mm)"}>
-4. EJEMPLO: <CANCELLED:{"nombreCliente":"Juan Pérez","fecha":"2025-10-23","hora_inicio":"16:20"}>
+**REGLAS PARA CANCELAR:**
+1. Pide: nombre completo, fecha (YYYY-MM-DD) y hora (HH:MM formato 24h)
+2. Confirma los datos
+3. Emite: <CANCELLED:{"nombreCliente":"(nombre exacto)","fecha":"(yyyy-mm-dd)","hora_inicio":"(hh:mm)"}>
 
-**IMPORTANTE:** 
-- Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.
-- Para cancelar, usa el formato EXACTO del tag <CANCELLED> con los 3 campos requeridos.
-
-**⏰ HORARIOS DISPONIBLES HOY (ya filtrados, NO ofrezcas horas pasadas):**
+**⏰ HORARIOS DISPONIBLES HOY:**
 ${slotsDisponiblesHoyTxt}
 
 ---
-**Información general:**
+**Info:**
 Horario de hoy: ${horarioHoy}
-
 **Servicios:**
 ${serviciosTxt}
-
 **Dirección:** ${direccion}
 **Pagos:** ${pagosTxt}
-
 **FAQs:**
 ${faqsTxt}
-
 **Upsell:** ${upsell}`;
     
     systemPrompt = (plantilla || fallback)
@@ -1394,22 +1341,19 @@ ${faqsTxt}
       .replace(/{pagosBarberia}/g, pagosTxt)
       .replace(/{upsellText}/g, upsell)
       .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
-      .replace(/{horasOcupadasHoy}/g, ''); // Limpiar token viejo
+      .replace(/{horasOcupadasHoy}/g, '');
       
   } else {
-    // MODO VENTAS
     systemPrompt = (VENTAS_PROMPT || '').trim() || 
       'Eres Cortex IA (ventas). Tono humano, corto. Guía a /start test o llamada.';
   }
 
-  // ========== HISTORIAL ==========
   state.conversationHistory.push({ role: 'user', content: userMessage });
   
   if (state.conversationHistory.length > 20) {
     state.conversationHistory = state.conversationHistory.slice(-20);
   }
 
-  // ========== LLAMADA A OPENAI ==========
   try {
     const completion = await openai.chat.completions.create({ 
       model: 'gpt-4o-mini', 
@@ -1424,12 +1368,10 @@ ${faqsTxt}
     let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || 
       '¿Te ayudo con algo más?';
     
-    // Procesar tags (solo en modo demo)
     if (state.mode === 'demo') {
       respuesta = await procesarTags(respuesta, chatId);
     }
     
-    // Detectar si el bot no sabe responder
     const frasesNoSabe = [
       'no estoy seguro', 
       'no tengo esa información', 
@@ -1487,14 +1429,12 @@ client.on('ready', async () => {
 
 client.on('message', async (message) => {
   try {
-    // Ignorar mensajes de grupos y del propio bot
     if (message.from.includes('@g.us') || message.fromMe) return;
     
     const userId = message.from;
     const userMessage = (message.body || '').trim();
     const state = getUserState(userId);
 
-    // ========== MANEJO DE VOZ ==========
     let processedMessage = userMessage;
     
     if (message.hasMedia && 
@@ -1517,12 +1457,10 @@ client.on('message', async (message) => {
       }
     }
     
-    // Si no hay mensaje procesado y no es comando, salir
     if (!processedMessage && !userMessage.startsWith('/')) return;
     
     console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
     
-    // Comandos especiales siempre funcionan
     const comandosEspeciales = [
       '/bot on', 
       '/bot off', 
@@ -1539,12 +1477,10 @@ client.on('message', async (message) => {
       (processedMessage || userMessage).toLowerCase().includes(cmd)
     );
     
-    // Verificar si el bot está habilitado
     if (!state.botEnabled && !esComandoEspecial) {
-      return; // No responder
+      return;
     }
 
-    // Procesar con IA
     const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
     
     if (respuesta) {
