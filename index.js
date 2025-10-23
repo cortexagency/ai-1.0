@@ -1,925 +1,575 @@
+// =========================
+// CORTEX IA - INDEX.JS (Fixed: reply issue by reading prompts from /prompts + safe system prompt + reservas in /data)
+// =========================
 require('dotenv').config();
+
+const fs = require('fs').promises;
+const fssync = require('fs');
+const path = require('path');
 const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
+const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
-const fs = require('fs').promises;
-const path = require('path');
 const { DateTime } = require('luxon');
-const express = require('express');
 
 // ========== CONFIGURACIÓN ==========
-const OWNER_NUMBER = process.env.OWNER_NUMBER || '573001234567'; // Número del dueño (formato: 57300...)
+const OWNER_NUMBER = process.env.OWNER_NUMBER || '573001234567'; // Número del dueño (formato: 57... sin +)
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
-const TIMEZONE = 'America/Bogota';
+const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
 
-// Cliente de OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// ======== RUTAS DE CARPETAS/ARCHIVOS ========
+const ROOT_DIR = __dirname;
+const DATA_DIR = path.join(ROOT_DIR, 'data');
+const PROMPTS_DIR = path.join(ROOT_DIR, 'prompts');
 
-// Cliente de WhatsApp
+const BOOKINGS_FILE = path.join(DATA_DIR, 'user_bookings.json');
+const RESERVAS_FILE = path.join(DATA_DIR, 'demo_reservas.json'); // ✅ en /data
+const SCHEDULED_MESSAGES_FILE = path.join(DATA_DIR, 'scheduled_messages.json');
+
+const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt'); // ✅ en /prompts
+const VENTAS_PROMPT_PATH = path.join(PROMPTS_DIR, 'ventas.txt');        // ✅ en /prompts
+
+// ========== OPENAI ==========
+if (!process.env.OPENAI_API_KEY) {
+  console.error("❌ FALTA OPENAI_API_KEY en variables de entorno.");
+  process.exit(1);
+}
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ========== WHATSAPP CLIENT ==========
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
   puppeteer: {
     headless: true,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
+      '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas','--no-first-run','--no-zygote',
+      '--single-process','--disable-gpu'
     ]
-  }
+  },
+  qrTimeout: 0,
+  authTimeout: 0,
 });
 
-// Express server (keep-alive para Railway + servir QR)
+// ========== EXPRESS (keep-alive / QR) ==========
 const app = express();
 let latestQR = null;
 
-app.get('/', (req, res) => res.send('Cortex AI Bot is running! 🤖'));
+app.get('/', (_, res) => res.send('Cortex AI Bot is running! 🤖'));
 
-app.get('/qr', async (req, res) => {
+app.get('/qr', async (_, res) => {
   if (!latestQR) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Cortex AI Bot - QR Code</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta http-equiv="refresh" content="3">
-          <style>
-            body {
-              font-family: monospace;
-              background: #000;
-              color: #0f0;
-              padding: 20px;
-              display: flex;
-              justify-content: center;
-              align-items: center;
-              min-height: 100vh;
-              margin: 0;
-              text-align: center;
-            }
-          </style>
-        </head>
-        <body>
-          <div>
-            <h2>⏳ Generando código QR...</h2>
-            <p>La página se actualizará automáticamente</p>
-          </div>
-        </body>
-      </html>
-    `);
+    return res.send(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="3"><style>
+      body{font-family:Arial;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    </style></head><body><h2>⏳ Generando QR…</h2></body></html>`);
   }
-
   try {
-    // Generar QR como SVG (más confiable)
-    const qrSVG = await QRCode.toString(latestQR, { 
-      type: 'svg',
-      width: 400,
-      margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#ffffff'
-      }
-    });
-    
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Cortex AI Bot - Escanea QR</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body {
-              font-family: Arial, sans-serif;
-              background: #1a1a1a;
-              color: #fff;
-              padding: 20px;
-              margin: 0;
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              justify-content: center;
-              min-height: 100vh;
-            }
-            .container {
-              text-align: center;
-              max-width: 500px;
-            }
-            h1 {
-              color: #00ff00;
-              margin-bottom: 20px;
-              font-size: 24px;
-            }
-            .qr-box {
-              background: white;
-              padding: 30px;
-              border-radius: 15px;
-              display: inline-block;
-              margin: 20px 0;
-              box-shadow: 0 10px 40px rgba(0, 255, 0, 0.3);
-            }
-            .instructions {
-              background: rgba(255, 255, 255, 0.1);
-              padding: 20px;
-              border-radius: 10px;
-              margin-top: 20px;
-              text-align: left;
-              line-height: 1.8;
-            }
-            .instructions ol {
-              padding-left: 20px;
-            }
-            .warning {
-              background: rgba(255, 100, 0, 0.2);
-              border-left: 4px solid #ff6400;
-              padding: 15px;
-              margin-top: 15px;
-              border-radius: 5px;
-              text-align: left;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>📱 CORTEX AI BOT</h1>
-            
-            <div class="qr-box">
-              ${qrSVG}
-            </div>
-            
-            <div class="instructions">
-              <strong>📋 Pasos para vincular:</strong>
-              <ol>
-                <li>Abre <strong>WhatsApp</strong> en tu celular</li>
-                <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
-                <li>Toca <strong>"Vincular un dispositivo"</strong></li>
-                <li><strong>Escanea este QR</strong> directamente desde WhatsApp</li>
-              </ol>
-            </div>
-            
-            <div class="warning">
-              <strong>⚠️ Si no funciona:</strong><br>
-              Usa la app de <strong>Cámara</strong> de tu celular, apunta a la pantalla y abre el link que aparece
-            </div>
-          </div>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error('Error generando QR:', error);
-    res.status(500).send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Error</title>
-          <style>
-            body {
-              font-family: monospace;
-              background: #000;
-              color: #f00;
-              padding: 20px;
-              text-align: center;
-            }
-          </style>
-        </head>
-        <body>
-          <h1>❌ Error generando QR</h1>
-          <p>${error.message}</p>
-          <p><a href="/qr" style="color: #0f0;">Reintentar</a></p>
-        </body>
-      </html>
-    `);
+    const svg = await QRCode.toString(latestQR, { type:'svg', width: 360, margin: 2 });
+    res.send(`<!DOCTYPE html><html><head><style>
+      body{font-family:Arial;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh}
+      .card{background:#fff;padding:24px;border-radius:12px}
+    </style></head><body><h1>📱 CORTEX AI BOT</h1><div class="card">${svg}</div></body></html>`);
+  } catch (e) {
+    console.error('QR error:', e);
+    res.status(500).send('Error generando QR');
   }
 });
+app.listen(PORT, () => console.log(`✅ HTTP server on :${PORT}`));
 
-app.listen(PORT, () => console.log(`✅ HTTP server on port ${PORT}`));
+// ========== HELPERS FS ==========
+async function ensureDir(p) { if (!fssync.existsSync(p)) fssync.mkdirSync(p, { recursive: true }); }
 
-// ========== ARCHIVOS DE DATOS ==========
-const DATA_DIR = path.join(__dirname, 'data');
-const BOOKINGS_FILE = path.join(DATA_DIR, 'user_bookings.json');
-const RESERVAS_FILE = path.join(__dirname, 'demo_reservas.json');
-const SCHEDULED_MESSAGES_FILE = path.join(DATA_DIR, 'scheduled_messages.json');
-
-// ========== INICIALIZACIÓN DE ARCHIVOS ==========
 async function initDataFiles() {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    
-    // user_bookings.json
-    try {
-      await fs.access(BOOKINGS_FILE);
-    } catch {
-      await fs.writeFile(BOOKINGS_FILE, JSON.stringify([], null, 2));
-      console.log('✅ Creado user_bookings.json');
+  await ensureDir(DATA_DIR);
+  await ensureDir(PROMPTS_DIR);
+
+  // Archivos JSON base
+  for (const [file, def] of [
+    [BOOKINGS_FILE, []],
+    [RESERVAS_FILE, {}],
+    [SCHEDULED_MESSAGES_FILE, []]
+  ]) {
+    try { await fs.access(file); } catch { await fs.writeFile(file, JSON.stringify(def, null, 2)); }
+  }
+}
+
+// ========== LECTURA/ESCRITURA JSON ==========
+async function readJson(file, fallback) {
+  try { return JSON.parse(await fs.readFile(file, 'utf8')); }
+  catch { return fallback; }
+}
+async function writeJson(file, data) {
+  await fs.writeFile(file, JSON.stringify(data, null, 2));
+}
+
+// ========== PROMPTS / CONFIG ==========
+let BARBERIA_CONFIG = null; // objeto JSON con negocio/horario/servicios/... + system_prompt
+let VENTAS_PROMPT = '';
+
+function parseFirstJsonBlock(text) {
+  // Intenta como JSON completo
+  try { return JSON.parse(text); } catch (_) {}
+  // Extrae primer { ... } nivelado
+  const s = text.indexOf('{'); if (s === -1) return null;
+  let depth = 0;
+  for (let i = s; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{') depth++; else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(s, i + 1)); } catch { return null; }
+      }
     }
-    
-    // scheduled_messages.json
-    try {
-      await fs.access(SCHEDULED_MESSAGES_FILE);
-    } catch {
-      await fs.writeFile(SCHEDULED_MESSAGES_FILE, JSON.stringify([], null, 2));
-      console.log('✅ Creado scheduled_messages.json');
-    }
-  } catch (error) {
-    console.error('❌ Error inicializando archivos:', error);
   }
+  return null;
 }
-
-// ========== FUNCIONES DE LECTURA/ESCRITURA ==========
-async function readBookings() {
-  try {
-    const data = await fs.readFile(BOOKINGS_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-}
-
-async function writeBookings(bookings) {
-  await fs.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2));
-}
-
-async function readReservas() {
-  try {
-    const data = await fs.readFile(RESERVAS_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return {};
-  }
-}
-
-async function writeReservas(reservas) {
-  await fs.writeFile(RESERVAS_FILE, JSON.stringify(reservas, null, 2));
-}
-
-async function readScheduledMessages() {
-  try {
-    const data = await fs.readFile(SCHEDULED_MESSAGES_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-}
-
-async function writeScheduledMessages(messages) {
-  await fs.writeFile(SCHEDULED_MESSAGES_FILE, JSON.stringify(messages, null, 2));
-}
-
-// ========== FUNCIONES DE SLOTS ==========
-function calcularSlotsUsados(horaInicio, duracionMin) {
-  const SLOT_BASE_MIN = 20;
-  const numSlots = Math.ceil(duracionMin / SLOT_BASE_MIN);
-  
-  const [hora, minuto] = horaInicio.split(':').map(Number);
-  const slots = [];
-  
-  for (let i = 0; i < numSlots; i++) {
-    const totalMin = hora * 60 + minuto + (i * SLOT_BASE_MIN);
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    slots.push(h * 3 + Math.floor(m / 20));
-  }
-  
-  return slots;
-}
-
-function formatearHora(horaInicio) {
-  const [h, m] = horaInicio.split(':').map(Number);
-  const periodo = h >= 12 ? 'PM' : 'AM';
-  const hora12 = h > 12 ? h - 12 : (h === 0 ? 12 : h);
-  return `${hora12}:${m.toString().padStart(2, '0')} ${periodo}`;
-}
-
-// ========== CARGAR CONFIGURACIÓN DE BARBERÍA ==========
-let BARBERIA_CONFIG = null;
 
 async function cargarConfigBarberia() {
   try {
-    const data = await fs.readFile(path.join(__dirname, 'barberia_base.txt'), 'utf8');
-    BARBERIA_CONFIG = JSON.parse(data);
-    console.log('✅ Configuración de barbería cargada');
-  } catch (error) {
-    console.error('❌ Error cargando barberia_base.txt:', error);
-    BARBERIA_CONFIG = { servicios: {} };
+    const raw = await fs.readFile(BARBERIA_BASE_PATH, 'utf8');
+    const parsed = parseFirstJsonBlock(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      console.error('❌ barberia_base.txt no tiene JSON válido.');
+      BARBERIA_CONFIG = { servicios: {}, horario: {}, negocio: {}, pagos: [], faqs: [], upsell: "", system_prompt: "" };
+    } else {
+      // Normalizar estructura
+      BARBERIA_CONFIG = parsed;
+      if (!BARBERIA_CONFIG.negocio) {
+        BARBERIA_CONFIG.negocio = {
+          nombre: parsed.nombre || 'Demo',
+          direccion: parsed.direccion || '',
+          telefono: parsed.telefono || ''
+        };
+      }
+      if (!BARBERIA_CONFIG.horario) BARBERIA_CONFIG.horario = {};
+      if (!BARBERIA_CONFIG.servicios) BARBERIA_CONFIG.servicios = {};
+      if (!BARBERIA_CONFIG.pagos) BARBERIA_CONFIG.pagos = [];
+      if (!BARBERIA_CONFIG.faqs) BARBERIA_CONFIG.faqs = [];
+      if (!BARBERIA_CONFIG.upsell) BARBERIA_CONFIG.upsell = "";
+      if (typeof BARBERIA_CONFIG.system_prompt !== 'string') BARBERIA_CONFIG.system_prompt = "";
+    }
+    console.log('✅ Cargado prompts/barberia_base.txt');
+  } catch (e) {
+    console.error('❌ No se pudo leer prompts/barberia_base.txt:', e.message);
+    BARBERIA_CONFIG = { servicios: {}, horario: {}, negocio: {}, pagos: [], faqs: [], upsell: "", system_prompt: "" };
   }
 }
-
-// ========== CARGAR PROMPT DE VENTAS ==========
-let VENTAS_PROMPT = '';
 
 async function cargarVentasPrompt() {
   try {
-    VENTAS_PROMPT = await fs.readFile(path.join(__dirname, 'ventas.txt'), 'utf8');
-    console.log('✅ Prompt de ventas cargado');
-  } catch (error) {
-    console.error('❌ Error cargando ventas.txt:', error);
+    VENTAS_PROMPT = await fs.readFile(VENTAS_PROMPT_PATH, 'utf8');
+    console.log('✅ Cargado prompts/ventas.txt');
+  } catch (e) {
+    console.error('❌ No se pudo leer prompts/ventas.txt:', e.message);
+    VENTAS_PROMPT = 'Eres Cortex IA, asistente de ventas. Responde breve, humano, y guía a la demo (/start test).';
   }
 }
 
-// ========== ESTADO DE USUARIO ==========
-const userStates = new Map();
+// ========== UTIL ==========
+function now() { return DateTime.now().setZone(TIMEZONE); }
+function formatearHora(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
 
+// ========== ARCHIVOS DE ESTADO ==========
+async function readBookings() { return readJson(BOOKINGS_FILE, []); }
+async function writeBookings(d) { return writeJson(BOOKINGS_FILE, d); }
+async function readReservas() { return readJson(RESERVAS_FILE, {}); }
+async function writeReservas(d) { return writeJson(RESERVAS_FILE, d); }
+async function readScheduledMessages() { return readJson(SCHEDULED_MESSAGES_FILE, []); }
+async function writeScheduledMessages(d) { return writeJson(SCHEDULED_MESSAGES_FILE, d); }
+
+// ========== USER STATE ==========
+const userStates = new Map();
 function getUserState(userId) {
   if (!userStates.has(userId)) {
-    userStates.set(userId, {
-      mode: 'sales', // 'sales' o 'demo'
-      conversationHistory: [],
-      botEnabled: true
-    });
+    userStates.set(userId, { mode: 'sales', conversationHistory: [], botEnabled: true });
   }
   return userStates.get(userId);
 }
 
-// ========== PROCESAMIENTO DE TAGS ==========
+// ========== SLOTS ==========
+function calcularSlotsUsados(horaInicio, duracionMin) {
+  const base = 20;
+  const blocks = Math.ceil(duracionMin / base);
+  const [h, m] = horaInicio.split(':').map(Number);
+  const out = [];
+  for (let i = 0; i < blocks; i++) {
+    const total = h * 60 + m + i * base;
+    const hh = Math.floor(total / 60);
+    const mm = total % 60;
+    out.push(`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+// ========== TAGS ==========
 async function procesarTags(mensaje, chatId) {
   const bookingMatch = mensaje.match(/<BOOKING:\s*({[^>]+})>/);
   const cancelMatch = mensaje.match(/<CANCELLED:\s*({[^>]+})>/);
-  
+
   if (bookingMatch) {
     try {
       const bookingData = JSON.parse(bookingMatch[1]);
-      
-      // Agregar ID único y chatId
-      bookingData.id = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      bookingData.id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       bookingData.chatId = chatId;
       bookingData.createdAt = new Date().toISOString();
       bookingData.status = 'confirmed';
-      
-      // Guardar en user_bookings.json
+
       const bookings = await readBookings();
       bookings.push(bookingData);
       await writeBookings(bookings);
-      
-      // Actualizar demo_reservas.json
+
       const reservas = await readReservas();
-      if (!reservas[bookingData.fecha]) {
-        reservas[bookingData.fecha] = [];
-      }
-      
-      const horaFormateada = formatearHora(bookingData.hora_inicio);
-      if (!reservas[bookingData.fecha].includes(horaFormateada)) {
-        reservas[bookingData.fecha].push(horaFormateada);
-      }
-      
+      reservas[bookingData.fecha] = reservas[bookingData.fecha] || [];
+      const horaF = formatearHora(bookingData.hora_inicio);
+      if (!reservas[bookingData.fecha].includes(horaF)) reservas[bookingData.fecha].push(horaF);
       await writeReservas(reservas);
-      
-      // Programar confirmación 2 horas antes
+
       await programarConfirmacion(bookingData);
-      
-      // Programar recordatorio 30 minutos antes
       await programarRecordatorio(bookingData);
-      
-      // Programar solicitud de reseña (1 día después)
       await programarResena(bookingData);
-      
-      // Programar mensaje "Te extrañamos" (2 semanas después)
       await programarExtranamos(bookingData);
-      
-      console.log('✅ Booking guardado:', bookingData.id);
-      
-      // Notificar al dueño
-      await notificarDueno(`📅 *Nueva cita agendada*\n\n👤 Cliente: ${bookingData.nombreCliente}\n🔧 Servicio: ${bookingData.servicio}\n📆 Fecha: ${bookingData.fecha}\n⏰ Hora: ${horaFormateada}`);
-    } catch (error) {
-      console.error('❌ Error procesando BOOKING:', error);
-    }
-    
-    // Eliminar el tag del mensaje
+
+      await notificarDueno(`📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${horaF}`);
+    } catch (e) { console.error('BOOKING parse error:', e); }
     return mensaje.replace(/<BOOKING:[^>]+>/, '').trim();
   }
-  
+
   if (cancelMatch) {
     try {
       const cancelData = JSON.parse(cancelMatch[1]);
       const bookings = await readBookings();
-      
-      const booking = bookings.find(b => b.id === cancelData.id);
-      if (booking) {
-        booking.status = 'cancelled';
+      const b = bookings.find(x => x.id === cancelData.id);
+      if (b) {
+        b.status = 'cancelled';
         await writeBookings(bookings);
-        
-        // Actualizar demo_reservas.json
         const reservas = await readReservas();
-        if (reservas[booking.fecha]) {
-          const horaFormateada = formatearHora(booking.hora_inicio);
-          reservas[booking.fecha] = reservas[booking.fecha].filter(h => h !== horaFormateada);
+        if (reservas[b.fecha]) {
+          const horaF = formatearHora(b.hora_inicio);
+          reservas[b.fecha] = reservas[b.fecha].filter(h => h !== horaF);
           await writeReservas(reservas);
         }
-        
-        console.log('✅ Booking cancelado:', cancelData.id);
-        
-        // Notificar al dueño
-        await notificarDueno(`❌ *Cita cancelada*\n\n👤 Cliente: ${booking.nombreCliente}\n🔧 Servicio: ${booking.servicio}\n📆 Fecha: ${booking.fecha}\n⏰ Hora: ${formatearHora(booking.hora_inicio)}`);
+        await notificarDueno(`❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`);
       }
-    } catch (error) {
-      console.error('❌ Error procesando CANCELLED:', error);
-    }
-    
+    } catch (e) { console.error('CANCELLED parse error:', e); }
     return mensaje.replace(/<CANCELLED:[^>]+>/, '').trim();
   }
-  
+
   return mensaje;
 }
 
-// ========== NOTIFICAR AL DUEÑO ==========
-async function notificarDueno(mensaje) {
-  try {
-    const chatId = `${OWNER_NUMBER}@c.us`;
-    await client.sendMessage(chatId, mensaje);
-    console.log('✅ Notificación enviada al dueño');
-  } catch (error) {
-    console.error('❌ Error notificando al dueño:', error);
-  }
+// ========== NOTIFICAR DUEÑO ==========
+async function notificarDueno(txt) {
+  try { await client.sendMessage(`${OWNER_NUMBER}@c.us`, txt); }
+  catch (e) { console.error('Notify owner error:', e.message); }
 }
 
-// ========== PROGRAMAR CONFIRMACIÓN 2H ANTES ==========
+// ========== PROGRAMACIONES ==========
 async function programarConfirmacion(booking) {
   try {
-    const [year, month, day] = booking.fecha.split('-').map(Number);
-    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
-    
-    const fechaCita = DateTime.fromObject({
-      year, month, day, hour: hora, minute: minuto
-    }, { zone: TIMEZONE });
-    
-    const fechaConfirmacion = fechaCita.minus({ hours: 2 });
-    
-    if (fechaConfirmacion > DateTime.now()) {
+    const [y,m,d] = booking.fecha.split('-').map(Number);
+    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
+    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
+    const when = cita.minus({ hours: 2 });
+    if (when > now()) {
       const messages = await readScheduledMessages();
       messages.push({
-        id: `confirm_${booking.id}`,
-        chatId: booking.chatId,
-        scheduledFor: fechaConfirmacion.toISO(),
+        id: `confirm_${booking.id}`, chatId: booking.chatId, scheduledFor: when.toISO(),
         type: 'confirmation',
-        message: `👋 Hola ${booking.nombreCliente}! Te recordamos tu cita de *${booking.servicio}* hoy a las ${formatearHora(booking.hora_inicio)}.\n\n¿Confirmas que asistirás? Responde *SÍ* o *NO*.`,
+        message: `👋 Hola ${booking.nombreCliente}! ¿Confirmas tu *${booking.servicio}* a las ${formatearHora(booking.hora_inicio)}? Responde *SÍ* o *NO*.`,
         bookingId: booking.id
       });
       await writeScheduledMessages(messages);
-      console.log('✅ Confirmación programada para', fechaConfirmacion.toISO());
     }
-  } catch (error) {
-    console.error('❌ Error programando confirmación:', error);
-  }
+  } catch (e) { console.error('programarConfirmacion:', e.message); }
 }
-
-// ========== PROGRAMAR RECORDATORIO 30MIN ANTES ==========
 async function programarRecordatorio(booking) {
   try {
-    const [year, month, day] = booking.fecha.split('-').map(Number);
-    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
-    
-    const fechaCita = DateTime.fromObject({
-      year, month, day, hour: hora, minute: minuto
-    }, { zone: TIMEZONE });
-    
-    const fechaRecordatorio = fechaCita.minus({ minutes: 30 });
-    
-    if (fechaRecordatorio > DateTime.now()) {
+    const [y,m,d] = booking.fecha.split('-').map(Number);
+    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
+    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
+    const when = cita.minus({ minutes: 30 });
+    if (when > now()) {
       const messages = await readScheduledMessages();
       messages.push({
-        id: `reminder_${booking.id}`,
-        chatId: booking.chatId,
-        scheduledFor: fechaRecordatorio.toISO(),
+        id:`reminder_${booking.id}`, chatId: booking.chatId, scheduledFor: when.toISO(),
         type: 'reminder',
-        message: `⏰ *Recordatorio*\n\nHola ${booking.nombreCliente}! Tu cita de *${booking.servicio}* es en 30 minutos (${formatearHora(booking.hora_inicio)}).\n\nNos vemos pronto! 💈`,
+        message: `⏰ *Recordatorio* — Tu cita de *${booking.servicio}* es en 30 minutos (${formatearHora(booking.hora_inicio)}).`,
         bookingId: booking.id
       });
       await writeScheduledMessages(messages);
-      console.log('✅ Recordatorio programado para', fechaRecordatorio.toISO());
     }
-  } catch (error) {
-    console.error('❌ Error programando recordatorio:', error);
-  }
+  } catch (e) { console.error('programarRecordatorio:', e.message); }
 }
-
-// ========== PROGRAMAR SOLICITUD DE RESEÑA (1 DÍA DESPUÉS) ==========
 async function programarResena(booking) {
   try {
-    const [year, month, day] = booking.fecha.split('-').map(Number);
-    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
-    
-    const fechaCita = DateTime.fromObject({
-      year, month, day, hour: hora, minute: minuto
-    }, { zone: TIMEZONE });
-    
-    const fechaResena = fechaCita.plus({ days: 1, hours: 2 }); // 1 día + 2 horas después
-    
-    if (fechaResena > DateTime.now()) {
+    const [y,m,d] = booking.fecha.split('-').map(Number);
+    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
+    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
+    const when = cita.plus({ days: 1, hours: 2 });
+    if (when > now()) {
       const messages = await readScheduledMessages();
       messages.push({
-        id: `review_${booking.id}`,
-        chatId: booking.chatId,
-        scheduledFor: fechaResena.toISO(),
+        id:`review_${booking.id}`, chatId: booking.chatId, scheduledFor: when.toISO(),
         type: 'review',
-        message: `⭐ Hola ${booking.nombreCliente}!\n\nEsperamos que hayas quedado muy contento con tu *${booking.servicio}* 😊\n\n¿Nos ayudas con una reseña en Google? Nos ayuda mucho a seguir creciendo:\n\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias por tu apoyo! 💈`,
+        message: `⭐ Hola ${booking.nombreCliente}! ¿Nos dejas una reseña? ${GOOGLE_REVIEW_LINK}`,
         bookingId: booking.id
       });
       await writeScheduledMessages(messages);
-      console.log('✅ Solicitud de reseña programada para', fechaResena.toISO());
     }
-  } catch (error) {
-    console.error('❌ Error programando reseña:', error);
-  }
+  } catch (e) { console.error('programarResena:', e.message); }
 }
-
-// ========== PROGRAMAR MENSAJE "TE EXTRAÑAMOS" (2 SEMANAS DESPUÉS) ==========
 async function programarExtranamos(booking) {
   try {
-    const [year, month, day] = booking.fecha.split('-').map(Number);
-    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
-    
-    const fechaCita = DateTime.fromObject({
-      year, month, day, hour: hora, minute: minuto
-    }, { zone: TIMEZONE });
-    
-    const fechaExtranamos = fechaCita.plus({ weeks: 2 });
-    
-    if (fechaExtranamos > DateTime.now()) {
+    const [y,m,d] = booking.fecha.split('-').map(Number);
+    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
+    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
+    const when = cita.plus({ weeks: 2 });
+    if (when > now()) {
       const messages = await readScheduledMessages();
       messages.push({
-        id: `winback_${booking.id}`,
-        chatId: booking.chatId,
-        scheduledFor: fechaExtranamos.toISO(),
+        id:`winback_${booking.id}`, chatId: booking.chatId, scheduledFor: when.toISO(),
         type: 'winback',
-        message: `👋 Hola ${booking.nombreCliente}! ¿Cómo vas?\n\nYa hace un tiempo que no te vemos por aquí 🙁\n\n*¡Tenemos un 10% de descuento especial para ti!* 🎉\n\n¿Agendamos tu próxima cita? 💈`,
+        message: `👋 ${booking.nombreCliente}, te extrañamos! ¿Agendamos otra? 💈`,
         bookingId: booking.id
       });
       await writeScheduledMessages(messages);
-      console.log('✅ Mensaje "Te extrañamos" programado para', fechaExtranamos.toISO());
     }
-  } catch (error) {
-    console.error('❌ Error programando mensaje "Te extrañamos":', error);
-  }
+  } catch (e) { console.error('programarExtranamos:', e.message); }
 }
-
-// ========== ENVIAR MENSAJES PROGRAMADOS ==========
-async function enviarMensajesProgramados() {
+setInterval(async () => {
   try {
     const messages = await readScheduledMessages();
-    const now = DateTime.now();
-    const pendientes = [];
-    
-    for (const msg of messages) {
-      const scheduledTime = DateTime.fromISO(msg.scheduledFor);
-      
-      if (scheduledTime <= now) {
-        // Enviar mensaje
-        try {
-          await client.sendMessage(msg.chatId, msg.message);
-          console.log(`✅ Mensaje ${msg.type} enviado:`, msg.id);
-        } catch (error) {
-          console.error(`❌ Error enviando mensaje ${msg.id}:`, error);
-          // Si falla, lo guardamos para reintentar
-          pendientes.push(msg);
-        }
-      } else {
-        pendientes.push(msg);
-      }
+    const t = now();
+    const remain = [];
+    for (const m of messages) {
+      const when = DateTime.fromISO(m.scheduledFor);
+      if (when <= t) {
+        try { await client.sendMessage(m.chatId, m.message); }
+        catch (e) { console.error('send scheduled error:', e.message); remain.push(m); }
+      } else remain.push(m);
     }
-    
-    await writeScheduledMessages(pendientes);
-  } catch (error) {
-    console.error('❌ Error en enviarMensajesProgramados:', error);
-  }
+    await writeScheduledMessages(remain);
+  } catch (e) { console.error('scheduler loop:', e.message); }
+}, 60000);
+
+// ========== GENERADORES PARA SYSTEM PROMPT ==========
+function generarTextoServicios() {
+  if (!BARBERIA_CONFIG?.servicios) return '';
+  return Object.entries(BARBERIA_CONFIG.servicios).map(([nombre, s]) => {
+    const precio = (s.precio || 0).toLocaleString('es-CO');
+    const min = s.min || 'N/A';
+    const emoji = s.emoji || '✂️';
+    return `${emoji} ${nombre} — $${precio} — ${min} min`;
+    }).join('\n');
+}
+function generarTextoFAQs() {
+  if (!BARBERIA_CONFIG?.faqs) return '';
+  return BARBERIA_CONFIG.faqs.map((f,i)=>`${i+1}. ${f.q}\n   → ${f.a}`).join('\n\n');
 }
 
-// Ejecutar cada minuto
-setInterval(enviarMensajesProgramados, 60000);
+// ========== CHAT CORE ==========
+const userStatesMap = new Map();
+function getUserState2(id){ return getUserState(id); } // alias
 
-// ========== COMANDO /show bookings ==========
-async function mostrarReservas(chatId) {
-  try {
-    const bookings = await readBookings();
-    const ahora = DateTime.now().setZone(TIMEZONE);
-    
-    const citasFuturas = bookings.filter(b => {
-      if (b.status === 'cancelled') return false;
-      const [year, month, day] = b.fecha.split('-').map(Number);
-      const fechaCita = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
-      return fechaCita >= ahora.startOf('day');
-    });
-    
-    if (citasFuturas.length === 0) {
-      return '📅 *No hay citas programadas*\n\nNo tienes citas futuras en este momento.';
-    }
-    
-    citasFuturas.sort((a, b) => {
-      const dateA = new Date(a.fecha + 'T' + a.hora_inicio);
-      const dateB = new Date(b.fecha + 'T' + b.hora_inicio);
-      return dateA - dateB;
-    });
-    
-    let mensaje = '📅 *CITAS PROGRAMADAS*\n\n';
-    
-    citasFuturas.forEach((cita, index) => {
-      const [year, month, day] = cita.fecha.split('-').map(Number);
-      const fechaDT = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
-      const fechaLegible = fechaDT.setLocale('es').toFormat('EEEE d \'de\' MMMM');
-      
-      mensaje += `${index + 1}. 👤 *${cita.nombreCliente}*\n`;
-      mensaje += `   🔧 ${cita.servicio}\n`;
-      mensaje += `   📆 ${fechaLegible}\n`;
-      mensaje += `   ⏰ ${formatearHora(cita.hora_inicio)}\n\n`;
-    });
-    
-    return mensaje.trim();
-  } catch (error) {
-    console.error('❌ Error en mostrarReservas:', error);
-    return '❌ Error al cargar las reservas. Intenta de nuevo.';
-  }
-}
-
-// ========== COMANDO /send later ==========
-async function programarMensajePersonalizado(args, fromChatId) {
-  try {
-    // Formato esperado: /send later "numero" "fecha hora" "mensaje"
-    // Ejemplo: /send later "573001234567" "2025-10-25 10:30" "Hola! Recordatorio de tu cotización"
-    
-    const regex = /"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"/;
-    const match = args.match(regex);
-    
-    if (!match) {
-      return '❌ Formato incorrecto.\n\nUso correcto:\n`/send later "573001234567" "2025-10-25 10:30" "Tu mensaje aquí"`\n\n📝 Formato de fecha: YYYY-MM-DD HH:MM';
-    }
-    
-    const [, numero, fechaHora, mensaje] = match;
-    
-    // Validar número (debe empezar con código de país)
-    if (!/^\d{10,15}$/.test(numero)) {
-      return '❌ Número inválido. Debe incluir código de país sin + (ej: 573001234567)';
-    }
-    
-    // Parsear fecha y hora
-    const fechaHoraDT = DateTime.fromFormat(fechaHora, 'yyyy-MM-dd HH:mm', { zone: TIMEZONE });
-    
-    if (!fechaHoraDT.isValid) {
-      return '❌ Fecha/hora inválida.\n\nFormato correcto: YYYY-MM-DD HH:MM\nEjemplo: 2025-10-25 14:30';
-    }
-    
-    if (fechaHoraDT <= DateTime.now()) {
-      return '❌ La fecha/hora debe ser futura.';
-    }
-    
-    // Guardar mensaje programado
-    const messages = await readScheduledMessages();
-    const nuevoMensaje = {
-      id: `custom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      chatId: `${numero}@c.us`,
-      scheduledFor: fechaHoraDT.toISO(),
-      type: 'custom',
-      message: mensaje,
-      scheduledBy: fromChatId
-    };
-    
-    messages.push(nuevoMensaje);
-    await writeScheduledMessages(messages);
-    
-    const fechaLegible = fechaHoraDT.setLocale('es').toFormat('EEEE d \'de\' MMMM \'a las\' HH:mm');
-    
-    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automáticamente en la fecha indicada.`;
-    
-  } catch (error) {
-    console.error('❌ Error en programarMensajePersonalizado:', error);
-    return '❌ Error al programar el mensaje. Revisa el formato e intenta de nuevo.';
-  }
-}
-
-// ========== CHAT CON OPENAI ==========
 async function chatWithAI(userMessage, userId, chatId) {
-  const state = getUserState(userId);
+  const state = getUserState2(userId);
 
-  // 👇 **BLOQUE MOVIDO AQUÍ** (antes estaba pegado al final y rompía el archivo)
-  if (userMessage.toLowerCase().includes('/bot off')) {
-    state.botEnabled = false;
-    return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.';
-  }
-  
-  if (userMessage.toLowerCase().includes('/bot on')) {
-    state.botEnabled = true;
-    return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪';
-  }
-  
-  if (userMessage.toLowerCase().includes('/show bookings')) {
-    return await mostrarReservas(chatId);
-  }
-  
-  if (userMessage.toLowerCase().startsWith('/send later')) {
+  // Comandos que funcionan siempre
+  const low = (userMessage || '').toLowerCase();
+  if (low.includes('/bot off')) { state.botEnabled = false; return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.'; }
+  if (low.includes('/bot on'))  { state.botEnabled = true;  return '✅ Bot reactivado. Aquí estoy pa’ ayudarte 💪'; }
+  if (low.startsWith('/send later')) {
     const args = userMessage.replace('/send later', '').trim();
     return await programarMensajePersonalizado(args, chatId);
   }
-  
-  if (!state.botEnabled) {
-    return null; // No responder si el bot está desactivado
-  }
-  
-  // Cambiar entre modo ventas y demo
-  if (userMessage.toLowerCase().includes('/start test')) {
+  if (low.includes('/show bookings')) return await mostrarReservas(chatId);
+
+  if (!state.botEnabled) return null;
+
+  // Cambiar de modo
+  if (low.includes('/start test')) {
     state.mode = 'demo';
     state.conversationHistory = [];
-    return '✅ *Demo activada*\n\nAhora estás hablando con el Asistente Cortex Barbershop. Puedes probar agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.';
+    return '✅ *Demo activada*\nHablas con el Asistente Cortex Barbershop. Puedes agendar, pedir precios, horarios, etc.\nEscribe `/end test` para salir.';
   }
-
-  // Comandos especiales
-  if (userMessage.toLowerCase().includes('/end test')) {
+  if (low.includes('/end test')) {
     state.mode = 'sales';
     state.conversationHistory = [];
-    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?';
+    return '✅ *Demo finalizada* — ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp. ¿Prefieres llamada de 10 min o pasos por aquí?';
   }
-  
-  // Detectar si el bot no sabe responder y alertar al dueño
-  const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
-  const esEmergencia = palabrasEmergencia.some(p => userMessage.toLowerCase().includes(p));
-  
-  if (esEmergencia) {
-    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`);
-  }
-  
-  // Construir contexto según el modo
+
+  // Construir prompt del sistema
   let systemPrompt = '';
-  
   if (state.mode === 'demo') {
-    // Modo Demo: Asistente de Barbería
-    const hoy = DateTime.now().setZone(TIMEZONE);
+    const hoy = now();
     const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE');
-    const fechaHoyTxt = hoy.toFormat('yyyy-MM-dd');
-    
-    // Leer reservas existentes
+    const fechaISO = hoy.toFormat('yyyy-LL-dd');
+
     const reservas = await readReservas();
-    const reservasHoy = reservas[fechaHoyTxt] || [];
-    
-    // Construir system prompt desde barberia_base.txt
-    if (BARBERIA_CONFIG && BARBERIA_CONFIG.system_prompt) {
-      systemPrompt = BARBERIA_CONFIG.system_prompt
-        .replace(/{hoy}/g, fechaHoyTxt)
-        .replace(/{diaSemana}/g, diaSemanaTxt)
-        .replace(/{nombreBarberia}/g, BARBERIA_CONFIG.negocio?.nombre || 'Barbería')
-        .replace(/{direccionBarberia}/g, BARBERIA_CONFIG.negocio?.direccion || '')
-        .replace(/{telefonoBarberia}/g, BARBERIA_CONFIG.negocio?.telefono || '')
-        .replace(/{horarioLv}/g, BARBERIA_CONFIG.horario?.lun_vie || '')
-        .replace(/{horarioS}/g, BARBERIA_CONFIG.horario?.sab || '')
-        .replace(/{horarioD}/g, BARBERIA_CONFIG.horario?.dom || '')
-        .replace(/{horarioHoy}/g, BARBERIA_CONFIG.horario?.lun_vie || '')
-        .replace(/{serviciosTxt}/g, generarTextoServicios())
-        .replace(/{faqsBarberia}/g, generarTextoFAQs())
-        .replace(/{pagosBarberia}/g, BARBERIA_CONFIG.pagos?.join(', ') || '')
-        .replace(/{upsellText}/g, BARBERIA_CONFIG.upsell || '')
-        .replace(/{slotsTxt}/g, `Hoy hay ${reservasHoy.length} reservas: ${reservasHoy.join(', ')}`);
-    }
+    const reservasHoy = reservas[fechaISO] || [];
+
+    const horario = BARBERIA_CONFIG?.horario || {};
+    const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
+    const direccion = BARBERIA_CONFIG?.negocio?.direccion || '';
+    const telefono = BARBERIA_CONFIG?.negocio?.telefono || '';
+    const serviciosTxt = generarTextoServicios();
+    const faqsTxt = generarTextoFAQs();
+    const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
+    const upsell = BARBERIA_CONFIG?.upsell || '';
+    const horarioLv = horario.lun_vie || '';
+    const horarioS  = horario.sab || '';
+    const horarioD  = horario.dom || '';
+    const horarioHoy = (diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS :
+                       diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : horarioLv) || '';
+
+    const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
+
+    // ✅ Fallback seguro por si system_prompt está vacío
+    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable y eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}.` +
+    `\nReglas clave: pregunta servicio → da precio/duración → pide día/hora → si confirman hora pide nombre → confirma y emite <BOOKING:{...}>.` +
+    `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
+
+    systemPrompt = (plantilla || fallback)
+      .replace(/{hoy}/g, fechaISO)
+      .replace(/{diaSemana}/g, diaSemanaTxt)
+      .replace(/{nombreBarberia}/g, nombreBarberia)
+      .replace(/{direccionBarberia}/g, direccion)
+      .replace(/{telefonoBarberia}/g, telefono)
+      .replace(/{horarioLv}/g, horarioLv)
+      .replace(/{horarioS}/g, horarioS)
+      .replace(/{horarioD}/g, horarioD)
+      .replace(/{horarioHoy}/g, horarioHoy)
+      .replace(/{serviciosTxt}/g, serviciosTxt)
+      .replace(/{faqsBarberia}/g, faqsTxt)
+      .replace(/{pagosBarberia}/g, pagosTxt)
+      .replace(/{upsellText}/g, upsell)
+      .replace(/{slotsTxt}/g, `Hoy ${reservasHoy.length ? 'ocupados' : 'libres'}: ${reservasHoy.join(', ') || 'sin ocupaciones registradas'}`);
   } else {
-    // Modo Ventas
-    systemPrompt = VENTAS_PROMPT || 'Eres Cortex IA, asistente de Cortex Agency (Colombia). Tu misión es ayudar a dueños de negocio a dejar de perder clientes por WhatsApp. Hablas como un parcero joven, profesional, claro y amable. Respuestas cortas: máximo 3-4 líneas. Emojis: 1 cada 2-3 mensajes máximo.';
+    systemPrompt = (VENTAS_PROMPT || '').trim();
+    if (!systemPrompt) {
+      systemPrompt = 'Eres Cortex IA (ventas). Tono humano, corto y claro. Guía al dueño a /start test o a una llamada de 10 min.';
+    }
   }
-  
-  // Agregar mensaje del usuario al historial
-  state.conversationHistory.push({
-    role: 'user',
-    content: userMessage
-  });
-  
-  // Limitar historial a últimos 20 mensajes
-  if (state.conversationHistory.length > 20) {
-    state.conversationHistory = state.conversationHistory.slice(-20);
-  }
-  
+
+  // Historial
+  state.conversationHistory.push({ role: 'user', content: userMessage });
+  if (state.conversationHistory.length > 20) state.conversationHistory = state.conversationHistory.slice(-20);
+
+  // Llamada a OpenAI
   try {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...state.conversationHistory
-      ],
+      messages: [{ role: 'system', content: systemPrompt }, ...state.conversationHistory],
       temperature: state.mode === 'demo' ? 0.4 : 0.6,
       max_tokens: 500
     });
-    
-    let respuesta = completion.choices[0].message.content.trim();
-    
-    // Procesar tags (solo en modo demo)
+    let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || '¿Te ayudo con algo más?';
+
     if (state.mode === 'demo') {
       respuesta = await procesarTags(respuesta, chatId);
     }
-    
-    // Detectar si el bot no sabe responder
-    const frasesNoSabe = [
-      'no estoy seguro',
-      'no tengo esa información',
-      'no puedo ayudarte con eso',
-      'necesito confirmarlo',
-      'no sé'
-    ];
-    
-    const noSabeResponder = frasesNoSabe.some(frase => respuesta.toLowerCase().includes(frase));
-    
-    if (noSabeResponder) {
-      await notificarDueno(`❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta del bot: "${respuesta}"\n\n💡 Puede requerir tu atención.`);
-    }
-    
-    // Agregar respuesta al historial
-    state.conversationHistory.push({
-      role: 'assistant',
-      content: respuesta
-    });
-    
+    state.conversationHistory.push({ role: 'assistant', content: respuesta });
     return respuesta;
-    
-  } catch (error) {
-    console.error('❌ Error en OpenAI:', error);
-    await notificarDueno(`❌ *ERROR DEL BOT*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\nError: ${error.message}\n\n⚠️ Sistema requiere revisión.`);
-    return '❌ Disculpa, tuve un problema técnico. ¿Puedes repetir tu pregunta?';
+  } catch (e) {
+    console.error('OpenAI error:', e.message);
+    await notificarDueno(`❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`);
+    return 'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
   }
 }
 
-// ========== FUNCIONES AUXILIARES PARA SYSTEM PROMPT ==========
-function generarTextoServicios() {
-  if (!BARBERIA_CONFIG || !BARBERIA_CONFIG.servicios) return '';
-  
-  const servicios = Object.entries(BARBERIA_CONFIG.servicios);
-  return servicios.map(([nombre, datos]) => {
-    const emoji = datos.emoji || '✂️';
-    return `${emoji} ${nombre} — ${datos.precio.toLocaleString()} — ${datos.min} min`;
-  }).join('\n');
+// ========== MENÚS / COMANDOS ADICIONALES ==========
+async function mostrarReservas(chatId) {
+  try {
+    const bookings = await readBookings();
+    const ahora = now().startOf('day');
+    const futuras = bookings.filter(b => b.status !== 'cancelled' && DateTime.fromISO(`${b.fecha}T${b.hora_inicio}:00`).setZone(TIMEZONE) >= ahora);
+    if (!futuras.length) return '📅 *No hay citas futuras*';
+    futuras.sort((a,b)=> (a.fecha + a.hora_inicio).localeCompare(b.fecha + b.hora_inicio));
+    let out = '📅 *CITAS PROGRAMADAS*\n\n';
+    for (const b of futuras) {
+      const fechaLegible = DateTime.fromISO(`${b.fecha}T00:00:00`).setZone(TIMEZONE).setLocale('es').toFormat("EEEE d 'de' MMMM");
+      out += `• ${b.nombreCliente} — ${b.servicio}\n  ${fechaLegible}, ${formatearHora(b.hora_inicio)}\n\n`;
+    }
+    return out.trim();
+  } catch (e) {
+    console.error('mostrarReservas error:', e.message);
+    return '❌ Error al cargar las reservas.';
+  }
 }
 
-function generarTextoFAQs() {
-  if (!BARBERIA_CONFIG || !BARBERIA_CONFIG.faqs) return '';
-  
-  return BARBERIA_CONFIG.faqs.map((faq, i) => {
-    return `${i + 1}. ${faq.q}\n   → ${faq.a}`;
-  }).join('\n\n');
+async function programarMensajePersonalizado(args, fromChatId) {
+  try {
+    const rx = /"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"/;
+    const m = args.match(rx);
+    if (!m) {
+      return '❌ Formato: /send later "573001234567" "2025-10-25 10:30" "Mensaje"';
+    }
+    const [, numero, fechaHora, mensaje] = m;
+    if (!/^\d{10,15}$/.test(numero)) return '❌ Número inválido (usa 57...)';
+    const dt = DateTime.fromFormat(fechaHora, 'yyyy-MM-dd HH:mm', { zone: TIMEZONE });
+    if (!dt.isValid) return '❌ Fecha/hora inválida. Usa YYYY-MM-DD HH:MM';
+    if (dt <= now()) return '❌ Debe ser en el futuro.';
+    const msgs = await readScheduledMessages();
+    msgs.push({
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      chatId: `${numero}@c.us`, scheduledFor: dt.toISO(), type: 'custom',
+      message: mensaje, scheduledBy: fromChatId
+    });
+    await writeScheduledMessages(msgs);
+    const legible = dt.setLocale('es').toFormat("EEEE d 'de' MMMM 'a las' HH:mm");
+    return `✅ Programado para ${numero}\n📅 ${legible}\n💬 "${mensaje}"`;
+  } catch (e) {
+    console.error('programarMensajePersonalizado:', e.message);
+    return '❌ No pude programarlo, revisa el formato.';
+  }
 }
 
-// ========== EVENTOS DE WHATSAPP ==========
+// ========== WHATSAPP EVENTS ==========
 client.on('qr', (qr) => {
-  console.log('📱 Código QR generado!');
-  console.log('🌐 Abre este link para escanear:');
-  console.log(`\n   👉 https://tu-app.up.railway.app/qr\n`);
+  console.log('📱 QR listo. Abre /qr en tu app para escanear.');
   latestQR = qr;
   qrcode.generate(qr, { small: true });
 });
-
 client.on('ready', async () => {
-  console.log('✅ Cliente de WhatsApp listo!');
-  latestQR = null; // Limpiar QR una vez conectado
+  console.log('✅ WhatsApp listo');
+  latestQR = null;
   await initDataFiles();
   await cargarConfigBarberia();
   await cargarVentasPrompt();
 });
-
 client.on('message', async (message) => {
   try {
-    // Ignorar mensajes de grupos y del propio bot
     if (message.from.includes('@g.us') || message.fromMe) return;
-    
     const userId = message.from;
-    const userMessage = message.body;
-    
-    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
-    
-    // Verificar si el bot está habilitado para este usuario
+    const userMessage = (message.body || '').trim();
     const state = getUserState(userId);
-    
-    // Comandos que funcionan aunque el bot esté off
-    const comandosEspeciales = ['/bot on', '/bot off', '/show bookings', '/send later'];
-    const esComandoEspecial = comandosEspeciales.some(cmd => userMessage.toLowerCase().includes(cmd));
-    
-    if (!state.botEnabled && !esComandoEspecial) {
-      return; // No responder
-    }
-    
-    // Procesar con IA
-    const respuesta = await chatWithAI(userMessage, userId, message.from);
-    
-    if (respuesta) {
-      // NO mostrar "escribiendo..." - enviar directo
-      await message.reply(respuesta);
-    }
-    
-  } catch (error) {
-    console.error('❌ Error procesando mensaje:', error);
-    await notificarDueno(`❌ *ERROR CRÍTICO*\n\nError procesando mensaje de ${message.from}\n\nDetalles: ${error.message}`);
+
+    const special = ['/bot on','/bot off','/show bookings','/send later'];
+    const low = userMessage.toLowerCase();
+    const isSpecial = special.some(cmd => low.startsWith(cmd));
+
+    if (!state.botEnabled && !isSpecial) return;
+
+    const reply = await chatWithAI(userMessage, userId, message.from);
+    if (reply) await message.reply(reply);
+  } catch (e) {
+    console.error('message handler error:', e.message);
+    await notificarDueno(`❌ ERROR handler\n${e.message}`);
   }
 });
+client.on('disconnected', (r) => { console.log('❌ Desconectado:', r); });
 
-client.on('disconnected', (reason) => {
-  console.log('❌ Cliente desconectado:', reason);
-  latestQR = null;
-});
-
-// ========== INICIAR CLIENTE ==========
+// ========== START ==========
 console.log('🚀 Iniciando Cortex AI Bot...');
 client.initialize();
 
-// ========== MANEJO DE ERRORES GLOBAL ==========
-process.on('unhandledRejection', (error) => {
-  console.error('❌ Unhandled Rejection:', error);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-});
+// ========== GLOBAL ERRORS ==========
+process.on('unhandledRejection', (e) => console.error('UNHANDLED REJECTION:', e));
+process.on('uncaughtException', (e) => console.error('UNCAUGHT EXCEPTION:', e));
