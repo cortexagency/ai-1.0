@@ -51,6 +51,7 @@ app.get('/qr', async (req, res) => {
         <head>
           <title>Cortex AI Bot - QR Code</title>
           <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="refresh" content="3">
           <style>
             body {
               font-family: monospace;
@@ -62,40 +63,30 @@ app.get('/qr', async (req, res) => {
               align-items: center;
               min-height: 100vh;
               margin: 0;
-            }
-            .container {
               text-align: center;
-            }
-            pre { 
-              display: inline-block;
-              background: #111;
-              padding: 20px;
-              border: 2px solid #0f0;
-              font-size: 12px;
-              line-height: 1;
             }
           </style>
         </head>
         <body>
-          <div class="container">
-            <h2>⏳ Esperando código QR...</h2>
-            <p>Actualiza en unos segundos</p>
+          <div>
+            <h2>⏳ Generando código QR...</h2>
+            <p>La página se actualizará automáticamente</p>
           </div>
-          <script>
-            setTimeout(() => window.location.reload(), 3000);
-          </script>
         </body>
       </html>
     `);
   }
 
   try {
-    // Generar QR en formato ASCII (texto plano)
-    const qrASCII = await new Promise((resolve, reject) => {
-      QRCode.toString(latestQR, { type: 'terminal', small: false }, (err, string) => {
-        if (err) reject(err);
-        else resolve(string);
-      });
+    // Generar QR como SVG (más confiable)
+    const qrSVG = await QRCode.toString(latestQR, { 
+      type: 'svg',
+      width: 400,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#ffffff'
+      }
     });
     
     res.send(`
@@ -106,61 +97,105 @@ app.get('/qr', async (req, res) => {
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <style>
             body {
-              font-family: monospace;
-              background: #000;
+              font-family: Arial, sans-serif;
+              background: #1a1a1a;
               color: #fff;
-              padding: 10px;
-              margin: 0;
-              overflow-x: auto;
-            }
-            .header {
-              text-align: center;
-              margin-bottom: 10px;
-              color: #0f0;
-            }
-            .qr-container {
-              display: inline-block;
-              background: #fff;
               padding: 20px;
-              margin: 0 auto;
-              display: flex;
-              justify-content: center;
-            }
-            pre {
               margin: 0;
-              font-size: 8px;
-              line-height: 0.9;
-              letter-spacing: -1px;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+            }
+            .container {
+              text-align: center;
+              max-width: 500px;
+            }
+            h1 {
+              color: #00ff00;
+              margin-bottom: 20px;
+              font-size: 24px;
+            }
+            .qr-box {
+              background: white;
+              padding: 30px;
+              border-radius: 15px;
+              display: inline-block;
+              margin: 20px 0;
+              box-shadow: 0 10px 40px rgba(0, 255, 0, 0.3);
             }
             .instructions {
-              text-align: center;
+              background: rgba(255, 255, 255, 0.1);
+              padding: 20px;
+              border-radius: 10px;
               margin-top: 20px;
-              color: #0f0;
-              font-size: 14px;
+              text-align: left;
+              line-height: 1.8;
+            }
+            .instructions ol {
+              padding-left: 20px;
+            }
+            .warning {
+              background: rgba(255, 100, 0, 0.2);
+              border-left: 4px solid #ff6400;
+              padding: 15px;
+              margin-top: 15px;
+              border-radius: 5px;
+              text-align: left;
             }
           </style>
         </head>
         <body>
-          <div class="header">
-            <h2>📱 CORTEX AI BOT - ESCANEA CON WHATSAPP</h2>
-          </div>
-          
-          <div style="text-align: center;">
-            <div class="qr-container">
-              <pre>${qrASCII}</pre>
+          <div class="container">
+            <h1>📱 CORTEX AI BOT</h1>
+            
+            <div class="qr-box">
+              ${qrSVG}
             </div>
-          </div>
-          
-          <div class="instructions">
-            <p>WhatsApp → Menú (⋮) → Dispositivos vinculados → Vincular dispositivo</p>
-            <p style="color: #ff0;">⚠️ Si no funciona, usa la app de cámara de tu celular y abre el link</p>
+            
+            <div class="instructions">
+              <strong>📋 Pasos para vincular:</strong>
+              <ol>
+                <li>Abre <strong>WhatsApp</strong> en tu celular</li>
+                <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
+                <li>Toca <strong>"Vincular un dispositivo"</strong></li>
+                <li><strong>Escanea este QR</strong> directamente desde WhatsApp</li>
+              </ol>
+            </div>
+            
+            <div class="warning">
+              <strong>⚠️ Si no funciona:</strong><br>
+              Usa la app de <strong>Cámara</strong> de tu celular, apunta a la pantalla y abre el link que aparece
+            </div>
           </div>
         </body>
       </html>
     `);
   } catch (error) {
     console.error('Error generando QR:', error);
-    res.status(500).send('Error generando QR');
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Error</title>
+          <style>
+            body {
+              font-family: monospace;
+              background: #000;
+              color: #f00;
+              padding: 20px;
+              text-align: center;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>❌ Error generando QR</h1>
+          <p>${error.message}</p>
+          <p><a href="/qr" style="color: #0f0;">Reintentar</a></p>
+        </body>
+      </html>
+    `);
   }
 });
 
