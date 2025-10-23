@@ -795,15 +795,6 @@ async function mostrarReservas(chatId) {
     return '❌ Error al cargar las reservas. Intenta de nuevo.';
   }
 }
-    });
-    
-    return mensaje.trim();
-  } catch (error) {
-    console.error('❌ Error en mostrarReservas:', error);
-    return '❌ Error al cargar las reservas. Intenta de nuevo.';
-  }
-}
-
 // ========== COMANDO /send later ==========
 async function programarMensajePersonalizado(args, fromChatId) {
   try {
