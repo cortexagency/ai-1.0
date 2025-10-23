@@ -1,5 +1,6 @@
 require('dotenv').config();
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
 const fs = require('fs').promises;
@@ -36,9 +37,166 @@ const client = new Client({
   }
 });
 
-// Express server (keep-alive para Railway)
+// Express server (keep-alive para Railway + servir QR)
 const app = express();
+let latestQR = null;
+
 app.get('/', (req, res) => res.send('Cortex AI Bot is running! 🤖'));
+
+app.get('/qr', async (req, res) => {
+  if (!latestQR) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cortex AI Bot - QR Code</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
+              margin: 0;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+            }
+            .container {
+              text-align: center;
+              padding: 2rem;
+              background: rgba(255, 255, 255, 0.1);
+              border-radius: 20px;
+              backdrop-filter: blur(10px);
+            }
+            h1 { margin-bottom: 1rem; }
+            p { font-size: 1.2rem; }
+            .spinner {
+              border: 4px solid rgba(255, 255, 255, 0.3);
+              border-top: 4px solid white;
+              border-radius: 50%;
+              width: 40px;
+              height: 40px;
+              animation: spin 1s linear infinite;
+              margin: 2rem auto;
+            }
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>🤖 Cortex AI Bot</h1>
+            <div class="spinner"></div>
+            <p>Esperando código QR...</p>
+            <p style="font-size: 0.9rem; opacity: 0.8;">Actualiza esta página en unos segundos</p>
+          </div>
+          <script>
+            setTimeout(() => window.location.reload(), 3000);
+          </script>
+        </body>
+      </html>
+    `);
+  }
+
+  try {
+    const qrImage = await QRCode.toDataURL(latestQR);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cortex AI Bot - Escanea el QR</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
+              margin: 0;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white;
+            }
+            .container {
+              text-align: center;
+              padding: 2rem;
+              background: rgba(255, 255, 255, 0.95);
+              border-radius: 20px;
+              box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+              max-width: 500px;
+            }
+            h1 {
+              color: #667eea;
+              margin-bottom: 1rem;
+            }
+            .qr-box {
+              background: white;
+              padding: 2rem;
+              border-radius: 15px;
+              margin: 2rem 0;
+              box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            }
+            img {
+              width: 100%;
+              max-width: 300px;
+              height: auto;
+            }
+            .instructions {
+              color: #333;
+              line-height: 1.6;
+              text-align: left;
+              margin: 1rem 0;
+            }
+            .instructions ol {
+              padding-left: 1.5rem;
+            }
+            .instructions li {
+              margin: 0.5rem 0;
+            }
+            .status {
+              background: #4CAF50;
+              color: white;
+              padding: 0.5rem 1rem;
+              border-radius: 20px;
+              display: inline-block;
+              margin-top: 1rem;
+              font-size: 0.9rem;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>📱 Escanea con WhatsApp</h1>
+            
+            <div class="qr-box">
+              <img src="${qrImage}" alt="QR Code">
+            </div>
+            
+            <div class="instructions">
+              <strong>📋 Instrucciones:</strong>
+              <ol>
+                <li>Abre <strong>WhatsApp</strong> en tu celular</li>
+                <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
+                <li>Toca <strong>"Vincular un dispositivo"</strong></li>
+                <li>Escanea este código QR</li>
+              </ol>
+            </div>
+            
+            <div class="status">
+              ✅ Bot activo y esperando conexión
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    res.status(500).send('Error generando QR');
+  }
+});
+
 app.listen(PORT, () => console.log(`✅ HTTP server on port ${PORT}`));
 
 // ========== ARCHIVOS DE DATOS ==========
@@ -696,12 +854,16 @@ function generarTextoFAQs() {
 
 // ========== EVENTOS DE WHATSAPP ==========
 client.on('qr', (qr) => {
-  console.log('📱 Escanea el código QR:');
+  console.log('📱 Código QR generado!');
+  console.log('🌐 Abre este link para escanear:');
+  console.log(`\n   👉 https://tu-app.up.railway.app/qr\n`);
+  latestQR = qr;
   qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', async () => {
   console.log('✅ Cliente de WhatsApp listo!');
+  latestQR = null; // Limpiar QR una vez conectado
   await initDataFiles();
   await cargarConfigBarberia();
   await cargarVentasPrompt();
@@ -747,6 +909,7 @@ client.on('message', async (message) => {
 
 client.on('disconnected', (reason) => {
   console.log('❌ Cliente desconectado:', reason);
+  latestQR = null;
 });
 
 // ========== INICIAR CLIENTE ==========
