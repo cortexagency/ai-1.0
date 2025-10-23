@@ -632,26 +632,47 @@ async function procesarTags(mensaje, chatId) {
   if (cancelMatch) {
     try {
       const cancelData = JSON.parse(cancelMatch[1]);
-      const bookings = await readBookings();
+      console.log('[CANCELACIÓN] Datos recibidos:', cancelData);
       
-      // =======================
-      // == CORRECCIÓN BUG 2 ==
-      // =======================
+      const bookings = await readBookings();
+      console.log('[CANCELACIÓN] Total de citas en sistema:', bookings.length);
+      
       // Buscar cita por ID o por datos (nombre, fecha, hora)
       let b = null;
       if (cancelData.id) {
-          b = bookings.find(x => x.id === cancelData.id);
+        console.log('[CANCELACIÓN] Buscando por ID:', cancelData.id);
+        b = bookings.find(x => x.id === cancelData.id);
       } else if (cancelData.nombreCliente && cancelData.fecha && cancelData.hora_inicio) {
-          // Buscar por datos si no hay ID
-          b = bookings.find(x => 
-              x.nombreCliente.toLowerCase() === cancelData.nombreCliente.toLowerCase() &&
-              x.fecha === cancelData.fecha &&
-              x.hora_inicio === cancelData.hora_inicio &&
-              x.status !== 'cancelled' // Solo cancelar citas activas
-          );
+        console.log('[CANCELACIÓN] Buscando por nombre/fecha/hora:', cancelData);
+        
+        // Normalizar el nombre para búsqueda (minúsculas, sin tildes)
+        const nombreBuscar = cancelData.nombreCliente.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        
+        b = bookings.find(x => {
+          const nombreCita = x.nombreCliente.toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          
+          const matchNombre = nombreCita.includes(nombreBuscar) || nombreBuscar.includes(nombreCita);
+          const matchFecha = x.fecha === cancelData.fecha;
+          const matchHora = x.hora_inicio === cancelData.hora_inicio;
+          const activa = x.status !== 'cancelled';
+          
+          console.log(`[CANCELACIÓN] Comparando con cita:`, {
+            nombreCita: x.nombreCliente,
+            nombreBuscar: cancelData.nombreCliente,
+            matchNombre,
+            matchFecha,
+            matchHora,
+            activa
+          });
+          
+          return matchNombre && matchFecha && matchHora && activa;
+        });
       }
       
       if (b) {
+        console.log('[CANCELACIÓN] ✅ Cita encontrada:', b.id);
         b.status = 'cancelled';
         await writeBookings(bookings);
         
@@ -661,11 +682,13 @@ async function procesarTags(mensaje, chatId) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
           const slotsOcupados = calcularSlotsUsados(b.hora_inicio, duracionMin);
           
+          console.log('[CANCELACIÓN] Liberando slots:', slotsOcupados);
           reservas[b.fecha] = reservas[b.fecha].filter(slot => !slotsOcupados.includes(slot));
           await writeReservas(reservas);
         }
         
-        // Se usa 'chatId' (quién está hablando) para la lógica de 'notificarDueno'
+        // SIEMPRE notificar al dueño (se filtra internamente si el mensaje viene del dueño)
+        console.log('[CANCELACIÓN] Enviando notificación al dueño...');
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`,
           chatId 
@@ -673,11 +696,11 @@ async function procesarTags(mensaje, chatId) {
         
         console.log('✅ Booking cancelado:', b.id);
       } else {
-        console.warn('⚠️ No se encontró cita para cancelar con datos:', cancelData);
+        console.warn('[CANCELACIÓN] ⚠️ No se encontró cita con datos:', cancelData);
         return "No pude encontrar la cita que mencionas para cancelar. ¿Puedes confirmar el nombre, fecha y hora exactos?";
       }
     } catch (e) { 
-      console.error('CANCELLED parse error:', e); 
+      console.error('[CANCELACIÓN] Error parseando:', e); 
     }
     return mensaje.replace(/<CANCELLED:[^>]+>/, '').trim();
   }
@@ -695,12 +718,14 @@ async function notificarDueno(txt, fromChatId = null) {
     }
     
     console.log(`📤 Enviando notificación al dueño: ${OWNER_CHAT_ID}`);
+    console.log(`📤 Contenido: ${txt.substring(0, 100)}...`);
     await client.sendMessage(OWNER_CHAT_ID, txt); 
     console.log('✅ Notificación enviada al dueño'); 
   }
   catch (e) { 
     console.error('❌ Error notificando al dueño:', e.message);
     console.error('   OWNER_CHAT_ID:', OWNER_CHAT_ID);
+    console.error('   fromChatId:', fromChatId);
   }
 }
 
@@ -842,7 +867,7 @@ function generarTextoServicios() {
     const precio = (s.precio || 0).toLocaleString('es-CO'); 
     const min = s.min || 'N/A'; 
     const emoji = s.emoji || '✂️';
-    return `${emoji} ${nombre} — $${precio} — ${min} min`;
+    return `${emoji} ${nombre} — ${precio} — ${min} min`;
   }).join('\n');
 }
 
@@ -901,6 +926,7 @@ async function mostrarReservas(chatId) {
     return '❌ Error al cargar las reservas. Intenta de nuevo.';
   }
 }
+
 // ========== COMANDO /send later ==========
 async function programarMensajePersonalizado(args, fromChatId) {
   try {
@@ -942,7 +968,7 @@ async function programarMensajePersonalizado(args, fromChatId) {
     
     const fechaLegible = fechaHoraDT.setLocale('es').toFormat('EEEE d \'de\' MMMM \'a las\' HH:mm');
     
-    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automatically.`;
+    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automáticamente.`;
     
   } catch (error) {
     console.error('❌ Error en programarMensajePersonalizado:', error);
@@ -1032,7 +1058,7 @@ async function comandoConfigAddServicio(args, fromChatId) {
   const guardado = await guardarConfigBarberia();
   
   if (guardado) {
-    return `✅ *Servicio añadido*\n\n${emoji} ${nombre}\n💰 $${parseInt(precio).toLocaleString('es-CO')}\n⏱️ ${min} min\n\n💾 Guardado en disco.`;
+    return `✅ *Servicio añadido*\n\n${emoji} ${nombre}\n💰 ${parseInt(precio).toLocaleString('es-CO')}\n⏱️ ${min} min\n\n💾 Guardado en disco.`;
   } else {
     return '⚠️ Servicio añadido en memoria pero NO se pudo guardar en disco.';
   }
@@ -1066,7 +1092,7 @@ async function comandoConfigEditServicio(args, fromChatId) {
   
   const s = BARBERIA_CONFIG.servicios[nombre];
   if (guardado) {
-    return `✅ *Servicio actualizado*\n\n${s.emoji} ${nombre}\n💰 $${s.precio.toLocaleString('es-CO')}\n⏱️ ${s.min} min\n\n💾 Guardado en disco.`;
+    return `✅ *Servicio actualizado*\n\n${s.emoji} ${nombre}\n💰 ${s.precio.toLocaleString('es-CO')}\n⏱️ ${s.min} min\n\n💾 Guardado en disco.`;
   } else {
     return '⚠️ Servicio actualizado en memoria pero NO se pudo guardar en disco.';
   }
@@ -1272,7 +1298,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   const esEmergencia = palabrasEmergencia.some(p => msgLower.includes(p));
   
   if (esEmergencia) {
-    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`);
+    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`, chatId);
   }
 
   // ========== CONSTRUIR SYSTEM PROMPT ==========
@@ -1284,9 +1310,6 @@ async function chatWithAI(userMessage, userId, chatId) {
     const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
     const fechaISO = hoy.toFormat('yyyy-MM-dd');
     
-    // =======================
-    // == CORRECCIÓN BUG 1 ==
-    // =======================
     // Generar la lista de slots disponibles REALES, filtrando horas pasadas
     const duracionDefault = 40; // Duración base para calcular la lista de slots
     const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
@@ -1316,17 +1339,44 @@ async function chatWithAI(userMessage, userId, chatId) {
     // Obtener hora actual en formato legible
     const horaActual = hoy.toFormat('h:mm a');
     
-    // ======================================
-    // == CORRECCIONES BUG 1 y 2 en FALLBACK ==
-    // ======================================
-    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL (solo referencia)=${horaActual}.` + 
-      `\nReglas para agendar: 1.Pregunta servicio 2.Da precio/duración 3.Ofrece los horarios de la lista de DISPONIBLES. 4.Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR 5.Si no te han dado nombre, pide nombre completo 6.Confirma y emite <BOOKING:{...}>.` + 
-      `\nReglas para CANCELAR: 1.Pide nombre, fecha y hora de la cita a cancelar. 2.Confirma los datos. 3.Emite <CANCELLED:{"nombreCliente":"(nombre)","fecha":"(yyyy-mm-dd)","hora_inicio":"(hh:mm)"}>.` +
-      `\nIMPORTANTE: Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.` +
-      `\n⏰ CRÍTICO: USA ESTA LISTA DE HORARIOS DISPONIBLES (ignora la hora actual, la lista ya está filtrada):` +
-      `\n{slotsDisponiblesHoy}` +
-      `\n\n---` +
-      `\nHorario general: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
+    // PROMPT MEJORADO CON INSTRUCCIONES DE CANCELACIÓN
+    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
+
+**REGLAS PARA AGENDAR:**
+1. Pregunta qué servicio necesita
+2. Da precio y duración del servicio
+3. Ofrece SOLO los horarios de la lista de DISPONIBLES (abajo)
+4. Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR
+5. Si no te han dado nombre, pide nombre completo
+6. Confirma y emite: <BOOKING:{"nombreCliente":"(nombre)","servicio":"(servicio)","fecha":"${fechaISO}","hora_inicio":"(hh:mm en formato 24h)"}>
+
+**REGLAS PARA CANCELAR CITAS:**
+1. Pide: nombre completo, fecha exacta (YYYY-MM-DD) y hora exacta (HH:MM formato 24h)
+2. Confirma los datos con el cliente
+3. Emite EXACTAMENTE: <CANCELLED:{"nombreCliente":"(nombre exacto)","fecha":"(yyyy-mm-dd)","hora_inicio":"(hh:mm)"}>
+4. EJEMPLO: <CANCELLED:{"nombreCliente":"Juan Pérez","fecha":"2025-10-23","hora_inicio":"16:20"}>
+
+**IMPORTANTE:** 
+- Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.
+- Para cancelar, usa el formato EXACTO del tag <CANCELLED> con los 3 campos requeridos.
+
+**⏰ HORARIOS DISPONIBLES HOY (ya filtrados, NO ofrezcas horas pasadas):**
+${slotsDisponiblesHoyTxt}
+
+---
+**Información general:**
+Horario de hoy: ${horarioHoy}
+
+**Servicios:**
+${serviciosTxt}
+
+**Dirección:** ${direccion}
+**Pagos:** ${pagosTxt}
+
+**FAQs:**
+${faqsTxt}
+
+**Upsell:** ${upsell}`;
     
     systemPrompt = (plantilla || fallback)
       .replace(/{hoy}/g, fechaISO)
@@ -1343,8 +1393,8 @@ async function chatWithAI(userMessage, userId, chatId) {
       .replace(/{faqsBarberia}/g, faqsTxt)
       .replace(/{pagosBarberia}/g, pagosTxt)
       .replace(/{upsellText}/g, upsell)
-      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt) // Token para la nueva lista
-      .replace(/{horasOcupadasHoy}/g, ''); // Limpiar token viejo por si acaso
+      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
+      .replace(/{horasOcupadasHoy}/g, ''); // Limpiar token viejo
       
   } else {
     // MODO VENTAS
@@ -1392,7 +1442,8 @@ async function chatWithAI(userMessage, userId, chatId) {
     
     if (noSabe) {
       await notificarDueno(
-        `❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta: "${respuesta}"\n\n💡 Revisa el chat.`
+        `❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta: "${respuesta}"\n\n💡 Revisa el chat.`,
+        chatId
       );
     }
     
@@ -1403,7 +1454,8 @@ async function chatWithAI(userMessage, userId, chatId) {
   } catch (e) {
     console.error('OpenAI error:', e.message);
     await notificarDueno(
-      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`
+      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`,
+      chatId
     );
     return 'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
   }
@@ -1427,7 +1479,7 @@ client.on('ready', async () => {
   await cargarConfigBarberia();
   await cargarVentasPrompt();
   
-  console.log('📁 Estado de archivos:');
+  console.log('📝 Estado de archivos:');
   console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
   console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
   console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
@@ -1503,7 +1555,8 @@ client.on('message', async (message) => {
     console.error('❌ Error procesando mensaje:', e.message);
     try {
       await notificarDueno(
-        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`
+        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
+        message.from
       );
     } catch (notifyError) {
       console.error('❌ Error notificando sobre error:', notifyError.message);
