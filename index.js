@@ -397,15 +397,38 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const hoy = DateTime.fromISO(fecha).setLocale('es').toFormat('EEEE').toLowerCase();
   
   let horarioStr = '';
-  if (hoy.startsWith('sá')) horarioStr = horario.sab || '9:00-18:00';
+  if (hoy.startsWith('sá')) horarioStr = horario.sab || '9:00-20:00';
   else if (hoy.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
-  else horarioStr = horario.lun_vie || '9:00-18:00';
+  else horarioStr = horario.lun_vie || '9:00-20:00';
   
-  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado') return [];
+  // Validación robusta del horario
+  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado' || !horarioStr.includes('-')) {
+    console.warn(`⚠️ Horario inválido para ${fecha}: "${horarioStr}"`);
+    return [];
+  }
   
-  const [inicio, fin] = horarioStr.split('-').map(s => s.trim());
+  const partes = horarioStr.split('-');
+  if (partes.length !== 2) {
+    console.warn(`⚠️ Formato de horario inválido: "${horarioStr}"`);
+    return [];
+  }
+  
+  const [inicio, fin] = partes.map(s => s.trim());
+  
+  // Validar formato de horas
+  if (!inicio.includes(':') || !fin.includes(':')) {
+    console.warn(`⚠️ Formato de hora inválido: inicio="${inicio}", fin="${fin}"`);
+    return [];
+  }
+  
   const [hInicio, mInicio] = inicio.split(':').map(Number);
   const [hFin, mFin] = fin.split(':').map(Number);
+  
+  // Validar que sean números válidos
+  if (isNaN(hInicio) || isNaN(mInicio) || isNaN(hFin) || isNaN(mFin)) {
+    console.warn(`⚠️ Horas no numéricas: ${inicio} - ${fin}`);
+    return [];
+  }
   
   const minutoInicio = hInicio * 60 + mInicio;
   const minutoFin = hFin * 60 + mFin;
@@ -509,7 +532,8 @@ async function procesarTags(mensaje, chatId) {
       await programarExtranamos(bookingData);
       
       await notificarDueno(
-        `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`
+        `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+        chatId
       );
       
       console.log('✅ Booking guardado:', bookingData.id);
@@ -540,7 +564,8 @@ async function procesarTags(mensaje, chatId) {
         }
         
         await notificarDueno(
-          `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`
+          `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`,
+          b.chatId
         );
         
         console.log('✅ Booking cancelado:', cancelData.id);
@@ -555,13 +580,21 @@ async function procesarTags(mensaje, chatId) {
 }
 
 // ========== NOTIFICAR AL DUEÑO ==========
-async function notificarDueno(txt) {
-  try { 
+async function notificarDueno(txt, fromChatId = null) {
+  try {
+    // No notificar si el que envía el mensaje ES el dueño
+    if (fromChatId && fromChatId === OWNER_CHAT_ID) {
+      console.log('ℹ️ No se notifica al dueño porque el mensaje viene del dueño mismo');
+      return;
+    }
+    
+    console.log(`📤 Enviando notificación al dueño: ${OWNER_CHAT_ID}`);
     await client.sendMessage(OWNER_CHAT_ID, txt); 
     console.log('✅ Notificación enviada al dueño'); 
   }
   catch (e) { 
-    console.error('❌ Error notificando al dueño:', e.message); 
+    console.error('❌ Error notificando al dueño:', e.message);
+    console.error('   OWNER_CHAT_ID:', OWNER_CHAT_ID);
   }
 }
 
@@ -720,9 +753,17 @@ async function mostrarReservas(chatId) {
     
     const citasFuturas = bookings.filter(b => {
       if (b.status === 'cancelled') return false;
+      
+      // Crear DateTime completo con fecha y hora
       const [year, month, day] = b.fecha.split('-').map(Number);
-      const fechaCita = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
-      return fechaCita >= ahora.startOf('day');
+      const [hour, minute] = b.hora_inicio.split(':').map(Number);
+      const fechaHoraCita = DateTime.fromObject(
+        { year, month, day, hour, minute }, 
+        { zone: TIMEZONE }
+      );
+      
+      // Solo mostrar citas futuras (fecha + hora)
+      return fechaHoraCita > ahora;
     });
     
     if (citasFuturas.length === 0) {
@@ -746,6 +787,14 @@ async function mostrarReservas(chatId) {
       mensaje += `   🔧 ${cita.servicio}\n`;
       mensaje += `   📆 ${fechaLegible}\n`;
       mensaje += `   ⏰ ${formatearHora(cita.hora_inicio)}\n\n`;
+    });
+    
+    return mensaje.trim();
+  } catch (error) {
+    console.error('❌ Error en mostrarReservas:', error);
+    return '❌ Error al cargar las reservas. Intenta de nuevo.';
+  }
+}
     });
     
     return mensaje.trim();
