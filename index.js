@@ -53,45 +53,33 @@ app.get('/qr', async (req, res) => {
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <style>
             body {
-              font-family: Arial, sans-serif;
+              font-family: monospace;
+              background: #000;
+              color: #0f0;
+              padding: 20px;
               display: flex;
               justify-content: center;
               align-items: center;
               min-height: 100vh;
               margin: 0;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              color: white;
             }
             .container {
               text-align: center;
-              padding: 2rem;
-              background: rgba(255, 255, 255, 0.1);
-              border-radius: 20px;
-              backdrop-filter: blur(10px);
             }
-            h1 { margin-bottom: 1rem; }
-            p { font-size: 1.2rem; }
-            .spinner {
-              border: 4px solid rgba(255, 255, 255, 0.3);
-              border-top: 4px solid white;
-              border-radius: 50%;
-              width: 40px;
-              height: 40px;
-              animation: spin 1s linear infinite;
-              margin: 2rem auto;
-            }
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
+            pre { 
+              display: inline-block;
+              background: #111;
+              padding: 20px;
+              border: 2px solid #0f0;
+              font-size: 12px;
+              line-height: 1;
             }
           </style>
         </head>
         <body>
           <div class="container">
-            <h1>🤖 Cortex AI Bot</h1>
-            <div class="spinner"></div>
-            <p>Esperando código QR...</p>
-            <p style="font-size: 0.9rem; opacity: 0.8;">Actualiza esta página en unos segundos</p>
+            <h2>⏳ Esperando código QR...</h2>
+            <p>Actualiza en unos segundos</p>
           </div>
           <script>
             setTimeout(() => window.location.reload(), 3000);
@@ -102,97 +90,76 @@ app.get('/qr', async (req, res) => {
   }
 
   try {
-    const qrImage = await QRCode.toDataURL(latestQR);
+    // Generar QR en formato ASCII (texto plano)
+    const qrASCII = await new Promise((resolve, reject) => {
+      QRCode.toString(latestQR, { type: 'terminal', small: false }, (err, string) => {
+        if (err) reject(err);
+        else resolve(string);
+      });
+    });
+    
     res.send(`
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Cortex AI Bot - Escanea el QR</title>
+          <title>Cortex AI Bot - Escanea QR</title>
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <style>
             body {
-              font-family: Arial, sans-serif;
+              font-family: monospace;
+              background: #000;
+              color: #fff;
+              padding: 10px;
+              margin: 0;
+              overflow-x: auto;
+            }
+            .header {
+              text-align: center;
+              margin-bottom: 10px;
+              color: #0f0;
+            }
+            .qr-container {
+              display: inline-block;
+              background: #fff;
+              padding: 20px;
+              margin: 0 auto;
               display: flex;
               justify-content: center;
-              align-items: center;
-              min-height: 100vh;
+            }
+            pre {
               margin: 0;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              color: white;
-            }
-            .container {
-              text-align: center;
-              padding: 2rem;
-              background: rgba(255, 255, 255, 0.95);
-              border-radius: 20px;
-              box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-              max-width: 500px;
-            }
-            h1 {
-              color: #667eea;
-              margin-bottom: 1rem;
-            }
-            .qr-box {
-              background: white;
-              padding: 2rem;
-              border-radius: 15px;
-              margin: 2rem 0;
-              box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-            }
-            img {
-              width: 100%;
-              max-width: 300px;
-              height: auto;
+              font-size: 8px;
+              line-height: 0.9;
+              letter-spacing: -1px;
             }
             .instructions {
-              color: #333;
-              line-height: 1.6;
-              text-align: left;
-              margin: 1rem 0;
-            }
-            .instructions ol {
-              padding-left: 1.5rem;
-            }
-            .instructions li {
-              margin: 0.5rem 0;
-            }
-            .status {
-              background: #4CAF50;
-              color: white;
-              padding: 0.5rem 1rem;
-              border-radius: 20px;
-              display: inline-block;
-              margin-top: 1rem;
-              font-size: 0.9rem;
+              text-align: center;
+              margin-top: 20px;
+              color: #0f0;
+              font-size: 14px;
             }
           </style>
         </head>
         <body>
-          <div class="container">
-            <h1>📱 Escanea con WhatsApp</h1>
-            
-            <div class="qr-box">
-              <img src="${qrImage}" alt="QR Code">
+          <div class="header">
+            <h2>📱 CORTEX AI BOT - ESCANEA CON WHATSAPP</h2>
+          </div>
+          
+          <div style="text-align: center;">
+            <div class="qr-container">
+              <pre>${qrASCII}</pre>
             </div>
-            
-            <div class="instructions">
-              <strong>📋 Instrucciones:</strong>
-              <ol>
-                <li>Abre <strong>WhatsApp</strong> en tu celular</li>
-                <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
-                <li>Toca <strong>"Vincular un dispositivo"</strong></li>
-                <li>Escanea este código QR</li>
-              </ol>
-            </div>
-            
-            <div class="status">
-              ✅ Bot activo y esperando conexión
-            </div>
+          </div>
+          
+          <div class="instructions">
+            <p>WhatsApp → Menú (⋮) → Dispositivos vinculados → Vincular dispositivo</p>
+            <p style="color: #ff0;">⚠️ Si no funciona, usa la app de cámara de tu celular y abre el link</p>
           </div>
         </body>
       </html>
     `);
   } catch (error) {
+    console.error('Error generando QR:', error);
     res.status(500).send('Error generando QR');
   }
 });
