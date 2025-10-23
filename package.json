@@ -1,12 +1,13 @@
 {
   "name": "cortex-ai-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "Bot inteligente de WhatsApp con IA para gestión de citas",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["whatsapp", "bot", "ai", "reservations"],
   "author": "",
   "license": "ISC",
   "dependencies": {

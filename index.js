@@ -1,554 +1,763 @@
-// =========================
-// CORTEX IA - INDEX.JS (Fixed: state init + voice + handlers + barberia_base only)
-// =========================
 require('dotenv').config();
-
-const fs = require('fs');
-const path = require('path');
-const qrcode = require('qrcode');
+const qrcode = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const OpenAI = require('openai');
+const fs = require('fs').promises;
+const path = require('path');
 const { DateTime } = require('luxon');
+const express = require('express');
 
-// --- Validar OpenAI API Key al inicio ---
-if (!process.env.OPENAI_API_KEY) {
-  console.error("¡ERROR FATAL! La variable de entorno OPENAI_API_KEY no está configurada.");
-  process.exit(1);
-}
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// ========== CONFIGURACIÓN ==========
+const OWNER_NUMBER = process.env.OWNER_NUMBER || '573001234567'; // Número del dueño (formato: 57300...)
+const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
+const TIMEZONE = 'America/Bogota';
+const PORT = process.env.PORT || 3000;
 
-const TZ = process.env.TZ || 'America/Bogota';
-const MAX_TURNS = 12;
+// Cliente de OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-// ======== Estado Global ========
-const state = {};
-let BOT_CONFIG = { ownerWhatsappId: null };
-
-// ======== GESTIÓN PERSISTENTE ========
-const DATA_DIR = path.join(__dirname, 'data');
-const PROMPTS_DIR = path.join(__dirname, 'prompts');
-const DEMO_RESERVAS_PATH = path.join(DATA_DIR, 'demo_reservas.json');
-const USER_BOOKINGS_PATH = path.join(DATA_DIR, 'user_bookings.json');
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-
-// ⚠️ Importante: ahora TODO viene de prompts/barberia_base.txt (NO hay barberia_info)
-const PROMPT_VENTAS_PATH = path.join(PROMPTS_DIR, 'ventas.txt');
-const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt');
-
-let DEMO_RESERVAS = {};
-let USER_BOOKINGS = {};
-let PROMPT_VENTAS = "";
-
-// De barberia_base.txt obtendremos:
-// - BARBERIA_DATA (objeto JSON con negocio/horario/servicios/...)
-// - PROMPT_DEMO_TEMPLATE (system_prompt)
-let BARBERIA_DATA = {};
-let PROMPT_DEMO_TEMPLATE = "";
-
-// Asegurar carpetas
-try {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(PROMPTS_DIR)) fs.mkdirSync(PROMPTS_DIR, { recursive: true });
-} catch (e) {
-  console.error("Error creando directorios:", e);
-}
-
-// --- Util de carga/guardado ---
-function loadData(filePath, defaultData = {}, isJson = true) {
-  console.log(`[Debug Load] Intentando cargar: ${filePath}`);
-  try {
-    if (fs.existsSync(filePath)) {
-      let fileContent = fs.readFileSync(filePath, 'utf8');
-      console.log(`[Debug Load] Archivo encontrado: ${filePath} (len=${fileContent ? fileContent.length : 0})`);
-      // Quitar BOM y espacios invisibles
-      if (typeof fileContent === 'string') {
-        fileContent = fileContent.replace(/^\uFEFF/, '').trim();
-      }
-      if (isJson) {
-        if (!fileContent) {
-          console.warn(`[Debug Load] ${path.basename(filePath)} está vacío (0 bytes tras trim). Devolviendo default.`);
-          return defaultData;
-        }
-        try {
-          return JSON.parse(fileContent);
-        } catch (parseErr) {
-          console.error(`[Error JSON.parse] ${path.basename(filePath)}: ${parseErr.message}`);
-          // No sobreescribir. Guardar .bak y devolver default.
-          try {
-            const bak = `${filePath}.bak`;
-            fs.writeFileSync(bak, fileContent, 'utf8');
-            console.warn(`[Debug Load] Copia de respaldo guardada en ${bak}`);
-          } catch (bakErr) {
-            console.error(`[Error Backup] No se pudo crear .bak para ${path.basename(filePath)}:`, bakErr.message);
-          }
-          return defaultData;
-        }
-      } else {
-        return fileContent;
-      }
-    } else {
-      console.warn(`[Debug Load] Archivo NO encontrado: ${filePath}. Creando con valor default.`);
-      const contentToWrite = isJson ? JSON.stringify(defaultData, null, 2) : (typeof defaultData === 'string' ? defaultData : '');
-      fs.writeFileSync(filePath, contentToWrite, 'utf8');
-      console.log(`[Memoria] Archivo ${path.basename(filePath)} creado.`);
-      return defaultData;
-    }
-  } catch (e) {
-    console.error(`[Error Memoria Load/Parse] ${path.basename(filePath)}:`, e.message);
-    return defaultData;
-  }
-}
-function saveData(filePath, data) {
-  try { fs.writeFileSync(filePath, JSON.stringify(data || {}, null, 2), 'utf8'); }
-  catch (e) { console.error(`[Error Save] ${path.basename(filePath)}:`, e.message); }
-}
-
-// --- Cargas ---
-function loadConfig() {
-  BOT_CONFIG = loadData(CONFIG_PATH, { ownerWhatsappId: null });
-  if (!BOT_CONFIG.ownerWhatsappId) BOT_CONFIG.ownerWhatsappId = null;
-  console.log('[Config] Cargada');
-  if (!BOT_CONFIG.ownerWhatsappId) console.warn('[Config] ownerWhatsappId no configurado.');
-  else console.log(`[Config] Dueño WhatsApp: ${BOT_CONFIG.ownerWhatsappId}`);
-}
-function loadReservas() { DEMO_RESERVAS = loadData(DEMO_RESERVAS_PATH, {}); console.log('[Reservas] Cargadas'); }
-function saveReservas() { saveData(DEMO_RESERVAS_PATH, DEMO_RESERVAS); }
-function loadUserBookings() { USER_BOOKINGS = loadData(USER_BOOKINGS_PATH, {}); console.log('[User Bookings] Cargadas'); }
-function saveUserBookings() { saveData(USER_BOOKINGS_PATH, USER_BOOKINGS); }
-
-// --- Cargar barberia_base (JSON + system_prompt) ---
-function parseFirstJsonBlock(text) {
-  // Intenta parsear todo el archivo como JSON primero
-  try { return JSON.parse(text); } catch (_) {}
-  // Si falla, intenta extraer el primer bloque { ... } nivelado
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const jsonStr = text.slice(start, i + 1);
-        try { return JSON.parse(jsonStr); } catch (_) { return null; }
-      }
-    }
-  }
-  return null;
-}
-
-function loadExternalFiles() {
-  console.log("--- Cargando Archivos Externos ---");
-
-  // ventas.txt (prompt de ventas)
-  PROMPT_VENTAS = loadData(PROMPT_VENTAS_PATH, "", false);
-  if (!PROMPT_VENTAS || typeof PROMPT_VENTAS !== 'string' || PROMPT_VENTAS.length < 50) {
-    console.error("¡ERROR FATAL! prompts/ventas.txt vacío o no cargado.");
-    PROMPT_VENTAS = "Error: Prompt de ventas no disponible.";
-  } else { console.log("[External] ventas.txt cargado OK."); }
-
-  // barberia_base.txt (JSON + system_prompt)
-  let baseRaw = loadData(BARBERIA_BASE_PATH, "", false);
-  if (!baseRaw || typeof baseRaw !== 'string' || baseRaw.length < 10) {
-    console.error("¡ERROR FATAL! prompts/barberia_base.txt vacío o no cargado.");
-    BARBERIA_DATA = { negocio: { nombre: "Demo" }, horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "", capacidad: { slot_base_min: 20 } };
-    PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
-  } else {
-    const parsed = parseFirstJsonBlock(baseRaw);
-    if (!parsed || typeof parsed !== 'object') {
-      console.error("¡ERROR FATAL! No se pudo parsear JSON desde prompts/barberia_base.txt");
-      BARBERIA_DATA = { negocio: { nombre: "Demo" }, horario: {}, servicios: {}, pagos: [], faqs: [], upsell: "", capacidad: { slot_base_min: 20 } };
-      PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
-    } else {
-      BARBERIA_DATA = parsed;
-      // Permitir compatibilidad con estructuras antiguas (nombre en raíz)
-      if (!BARBERIA_DATA.negocio) {
-        BARBERIA_DATA.negocio = {
-          nombre: BARBERIA_DATA.nombre || "Demo",
-          direccion: BARBERIA_DATA.direccion || "",
-          telefono: BARBERIA_DATA.telefono || ""
-        };
-      }
-      if (!BARBERIA_DATA.capacidad) BARBERIA_DATA.capacidad = { slot_base_min: 20 };
-      PROMPT_DEMO_TEMPLATE = BARBERIA_DATA.system_prompt || "";
-      if (!PROMPT_DEMO_TEMPLATE || PROMPT_DEMO_TEMPLATE.length < 50) {
-        console.warn("[External] system_prompt no encontrado en barberia_base.txt; se usará texto de plantilla si existiera.");
-        // Si quisieras, aquí podrías intentar extraer un bloque ```txt ... ```
-        PROMPT_DEMO_TEMPLATE = "Error: Plantilla demo no disponible.";
-      } else {
-        console.log("[External] barberia_base.txt cargado OK (JSON + system_prompt).");
-      }
-    }
-  }
-  console.log("--- Fin Carga Archivos Externos ---");
-}
-
-// Init loads
-loadConfig();
-loadReservas();
-loadUserBookings();
-loadExternalFiles();
-
-// ======== PROMPTS / UTIL ========
-const CTAs = ["¿Quieres verlo? /start test 💈", "¿Agendamos 10 min para explicarte?"];
-function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-function now() { return DateTime.now().setZone(TZ); }
-
-// -- Detectores mínimos (no tocamos tu lógica si ya la tienes) --
-function detectServicio(text) { return null; }
-function detectHoraExacta(text) { return null; }
-function detectCancelacion(text) { return /cancelar|cancela|no puedo ir/i.test(text || ''); }
-function calcularSlotsUsados(horaInicio, durMin) { return []; }
-function parseRango(fecha, rango) { return null; }
-function generateBookingId() { return Math.random().toString(36).substring(2, 9); }
-
-// ===== Gestión de Estado =====
-function ensureState(id) {
-  const defaultState = {
-    botEnabled: true,
-    mode: 'cortex',
-    history: [],
-    reservas: [],
-    flags: { justEndedTest: false },
-    ctx: {},
-    sales: {}
-  };
-  if (!id || typeof id !== 'string') return { ...defaultState };
-  if (!state[id]) state[id] = { ...defaultState };
-  return state[id];
-}
-function setState(id, s) { if (id && typeof id === 'string') state[id] = s; }
-function pushHistory(id, role, content) {
-  if (!id) return;
-  const s = ensureState(id);
-  s.history = s.history || [];
-  s.history.push({ role, content, at: Date.now() });
-  if (s.history.length > 2 * MAX_TURNS) s.history = s.history.slice(-2 * MAX_TURNS);
-  setState(id, s);
-}
-
-// ===== Gestión de Reservas (mínimas, no-op seguras) =====
-async function addReserva(userId, fecha, hora_inicio, servicio, slots_usados = [], nombreCliente = "Cliente") {
-  // No-op para evitar romper si no usas almacenamiento real aquí
-  return { id: generateBookingId() };
-}
-async function removeReserva(userId, bookingId) { return true; }
-
-// ===== Generación de Slots de Demo =====
-function generarSlotsDemo(diasAdelante = 3) {
-  const hoy = now();
-  const out = [];
-  const slotMin = (BARBERIA_DATA.capacidad && BARBERIA_DATA.capacidad.slot_base_min) ? BARBERIA_DATA.capacidad.slot_base_min : 20;
-
-  // El JSON nuevo trae horario.almuerzo o horario.almuerzo_demo (compat)
-  const alm = BARBERIA_DATA.horario || {};
-  const almuerzo = (alm.almuerzo || alm.almuerzo_demo || { start: -1, end: -1 });
-
-  for (let d = 0; d < diasAdelante; d++) {
-    const fecha = hoy.plus({ days: d });
-    const fechaStr = fecha.toFormat('yyyy-LL-dd');
-    const wd = fecha.weekday;
-
-    // Seleccionar horario del día
-    let openStr = null, closeStr = null;
-    if (wd >= 1 && wd <= 5 && alm.lun_vie) [openStr, closeStr] = alm.lun_vie.split('–').map(s => s.trim());
-    else if (wd === 6 && alm.sab) [openStr, closeStr] = alm.sab.split('–').map(s => s.trim());
-    else if (wd === 7 && alm.dom) [openStr, closeStr] = alm.dom.split('–').map(s => s.trim());
-    if (!openStr || !closeStr) { console.log(`[Slots] No horario para ${fechaStr}`); continue; }
-
-    const open = DateTime.fromFormat(openStr, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day });
-    const close = DateTime.fromFormat(closeStr, 'h:mm a', { zone: TZ }).set({ year: fecha.year, month: fecha.month, day: fecha.day });
-    if (!open.isValid || !close.isValid) { console.warn(`[Slots] Horario inválido ${fechaStr}: ${openStr}-${closeStr}`); continue; }
-
-    let cursor = open;
-    if (d === 0 && hoy > open) {
-      const minsSinceOpen = hoy.diff(open, 'minutes').minutes;
-      cursor = open.plus({ minutes: Math.ceil(minsSinceOpen / slotMin) * slotMin });
-    }
-    const horas = [];
-    while (cursor < close && horas.length < 20) {
-      const hh = cursor.toFormat('h:mm a');
-      const hora24 = cursor.hour;
-      const ocupada = DEMO_RESERVAS[fechaStr]?.includes(hh);
-      const esAlmuerzo = hora24 >= almuerzo.start && hora24 < almuerzo.end;
-      const slotEndTime = cursor.plus({ minutes: slotMin });
-      if (!ocupada && !esAlmuerzo && cursor >= hoy.plus({ minutes: 30 }) && slotEndTime <= close) {
-        horas.push(hh);
-      }
-      cursor = cursor.plus({ minutes: slotMin });
-    }
-    if (horas.length) out.push({ fecha: fechaStr, horas });
-  }
-  return out;
-}
-
-// ===== Prompt de demo barbería =====
-function getPromptDemoBarberia(slotsDisponibles) {
-  if (!PROMPT_DEMO_TEMPLATE || PROMPT_DEMO_TEMPLATE.startsWith("Error:")) return "Error: Plantilla prompt demo no cargada.";
-  const hoyFmt = now().setLocale('es').toFormat('cccc d LLLL, yyyy');
-  const hoyDiaSemana = now().weekday;
-
-  const servicios = BARBERIA_DATA.servicios || {};
-  const horario = BARBERIA_DATA.horario || {};
-  const faqs = BARBERIA_DATA.faqs || [];
-  const pagos = BARBERIA_DATA.pagos || [];
-
-  const serviciosTxt = Object.entries(servicios)
-    .map(([k, v]) => `- ${k}: $${(v.precio || 0).toLocaleString('es-CO')} (${v.min || 'N/A'} min)`)
-    .join('\n');
-
-  let slotsTxt = "Lo siento, no veo cupos disponibles.";
-  if (slotsDisponibles?.length) {
-    slotsTxt = slotsDisponibles
-      .map(d => `${DateTime.fromISO(d.fecha).setLocale('es').toFormat('cccc d')}: ${d.horas.join(', ')}`)
-      .join('\n');
-  }
-
-  let horarioHoy = "No disponible";
-  if (hoyDiaSemana >= 1 && hoyDiaSemana <= 5) horarioHoy = horario.lun_vie || horarioHoy;
-  else if (hoyDiaSemana === 6) horarioHoy = horario.sab || horarioHoy;
-  else if (hoyDiaSemana === 7) horarioHoy = horario.dom || horarioHoy;
-
-  const faqsBarberia = faqs.map(f => `- P: ${f.q}\n  R: ${f.a}`).join('\n');
-
-  // Nombre/dirección/telefono desde negocio (compat con plano)
-  const negocio = BARBERIA_DATA.negocio || {};
-  const nombreBarberia = negocio.nombre || BARBERIA_DATA.nombre || "la barbería";
-  const direccionBarberia = negocio.direccion || BARBERIA_DATA.direccion || "N/A";
-  const telefonoBarberia = negocio.telefono || BARBERIA_DATA.telefono || "N/A";
-
-  let finalPrompt = PROMPT_DEMO_TEMPLATE;
-  finalPrompt = finalPrompt.replace(/{nombreBarberia}/g, nombreBarberia);
-  finalPrompt = finalPrompt.replace(/{hoy}/g, hoyFmt);
-  finalPrompt = finalPrompt.replace(/{horarioHoy}/g, horarioHoy);
-  finalPrompt = finalPrompt.replace(/{slotsTxt}/g, slotsTxt || "No disponible");
-  finalPrompt = finalPrompt.replace(/{horarioLv}/g, horario.lun_vie || "N/A");
-  finalPrompt = finalPrompt.replace(/{horarioS}/g, horario.sab || "N/A");
-  finalPrompt = finalPrompt.replace(/{horarioD}/g, horario.dom || "N/A");
-  finalPrompt = finalPrompt.replace(/{serviciosTxt}/g, serviciosTxt || "N/A");
-  finalPrompt = finalPrompt.replace(/{direccionBarberia}/g, direccionBarberia);
-  finalPrompt = finalPrompt.replace(/{pagosBarberia}/g, pagos.join(', ') || "N/A");
-  finalPrompt = finalPrompt.replace(/{faqsBarberia}/g, faqsBarberia || "N/A");
-  finalPrompt = finalPrompt.replace(/{upsellText}/g, BARBERIA_DATA.upsell || "");
-  finalPrompt = finalPrompt.replace(/{telefonoBarberia}/g, telefonoBarberia);
-  return finalPrompt;
-}
-
-// === TRANSCRIPCIÓN DE AUDIO (WhatsApp -> OpenAI) ===
-async function transcribeVoiceFromMsg(msg) {
-  try {
-    const media = await msg.downloadMedia();
-    if (!media || !media.data) return null;
-
-    const mime = media.mimetype || '';
-    const ext = mime.includes('ogg') ? 'ogg'
-             : (mime.includes('mpeg') || mime.includes('mp3')) ? 'mp3'
-             : mime.includes('wav') ? 'wav'
-             : 'ogg';
-
-    const tmpPath = path.join(DATA_DIR, `voice_${Date.now()}.${ext}`);
-    const buffer = Buffer.from(media.data, 'base64');
-    fs.writeFileSync(tmpPath, buffer);
-
-    try {
-      let resp;
-      try {
-        resp = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(tmpPath),
-          model: 'gpt-4o-transcribe',
-          language: 'es'
-        });
-      } catch (e) {
-        resp = await openai.audio.transcriptions.create({
-          file: fs.createReadStream(tmpPath),
-          model: 'whisper-1',
-          language: 'es'
-        });
-      }
-      const text = resp?.text || resp?.results?.[0]?.alternatives?.[0]?.transcript || '';
-      return (text || '').trim();
-    } finally {
-      fs.unlink(tmpPath, () => {});
-    }
-  } catch (err) {
-    console.error('[Audio] Error transcribiendo:', err);
-    return null;
-  }
-}
-
-// ======== WHATSAPP CLIENT ========
+// Cliente de WhatsApp
 const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(__dirname, 'data', 'session') }),
+  authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-accelerated-2d-canvas','--no-first-run','--no-zygote','--disable-gpu','--disable-extensions'],
-  },
-  qrTimeout: 0,
-  authTimeout: 0,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ]
+  }
 });
-client.on('qr', (qr) => {
-  console.log('\n⚠️ No se puede mostrar el QR aquí. Copia el siguiente enlace en tu navegador para verlo:\n');
-  qrcode.toDataURL(qr, (err, url) => {
-    if (err) { console.error("Error generando QR Data URL:", err); return; }
-    console.log(url);
-    console.log('\n↑↑↑ Copia ese enlace y pégalo en tu navegador para escanear el QR ↑↑↑');
-  });
-});
-client.on('ready', () => console.log('✅ Cortex IA listo!'));
-client.on('auth_failure', msg => { console.error('ERROR AUTH:', msg); });
-client.on('disconnected', (reason) => { console.log('Cliente desconectado:', reason); });
 
-// ======== LLAMADA SEGURA A OPENAI ========
-async function safeChatCall(payload, tries = 2) {
-  if (!payload || !Array.isArray(payload.messages) || payload.messages.length === 0) {
-    console.error("[Error OpenAI Previo] Payload inválido:", payload);
-    throw new Error("Payload inválido enviado a OpenAI.");
-  }
-  if (!payload.messages[0].content || payload.messages[0].content.startsWith("Error:")) {
-    console.error("[Error OpenAI Previo] Prompt del sistema inválido:", payload.messages[0].content);
-    throw new Error("Prompt del sistema inválido enviado a OpenAI.");
-  }
-  for (let i = 0; i < tries; i++) {
+// Express server (keep-alive para Railway)
+const app = express();
+app.get('/', (req, res) => res.send('Cortex AI Bot is running! 🤖'));
+app.listen(PORT, () => console.log(`✅ HTTP server on port ${PORT}`));
+
+// ========== ARCHIVOS DE DATOS ==========
+const DATA_DIR = path.join(__dirname, 'data');
+const BOOKINGS_FILE = path.join(DATA_DIR, 'user_bookings.json');
+const RESERVAS_FILE = path.join(__dirname, 'demo_reservas.json');
+const SCHEDULED_MESSAGES_FILE = path.join(DATA_DIR, 'scheduled_messages.json');
+
+// ========== INICIALIZACIÓN DE ARCHIVOS ==========
+async function initDataFiles() {
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    
+    // user_bookings.json
     try {
-      const completion = await openai.chat.completions.create(payload);
-      if (!completion?.choices?.[0]?.message?.content) throw new Error("Respuesta de OpenAI inválida.");
-      return completion;
-    } catch (e) {
-      console.error(`[Error OpenAI] Intento ${i + 1} falló:`, e);
-      if (i === tries - 1) throw e;
-      await new Promise(r => setTimeout(r, 700));
+      await fs.access(BOOKINGS_FILE);
+    } catch {
+      await fs.writeFile(BOOKINGS_FILE, JSON.stringify([], null, 2));
+      console.log('✅ Creado user_bookings.json');
     }
+    
+    // scheduled_messages.json
+    try {
+      await fs.access(SCHEDULED_MESSAGES_FILE);
+    } catch {
+      await fs.writeFile(SCHEDULED_MESSAGES_FILE, JSON.stringify([], null, 2));
+      console.log('✅ Creado scheduled_messages.json');
+    }
+  } catch (error) {
+    console.error('❌ Error inicializando archivos:', error);
   }
-  throw new Error("safeChatCall falló inesperadamente.");
 }
 
-// ======== HANDLER MENSAJES ========
-client.on('message', async (msg) => {
-  if (!msg?.from || typeof msg.from !== 'string') return;
-
+// ========== FUNCIONES DE LECTURA/ESCRITURA ==========
+async function readBookings() {
   try {
-    const from = msg.from;
-    const originalText = (msg.body || '').trim();
-    let low = originalText.toLowerCase();
-    let processedText = originalText;
+    const data = await fs.readFile(BOOKINGS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
 
-    // --- MANEJO DE VOZ ---
-    if (msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt' || (msg.mimetype && msg.mimetype.startsWith('audio/')))) {
-      try {
-        const transcript = await transcribeVoiceFromMsg(msg);
-        if (transcript && transcript.length > 0) {
-          processedText = transcript;
-          low = transcript.toLowerCase();
-        } else {
-          return await msg.reply('No alcancé a entender el audio. ¿Puedes repetirlo un poco más claro?');
-        }
-      } catch (e) {
-        console.error('[Handler Voz] Error:', e);
-        return await msg.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
-      }
-    }
-    // --- FIN MANEJO VOZ ---
+async function writeBookings(bookings) {
+  await fs.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2));
+}
 
-    if (!processedText && !(low.startsWith('/'))) return;
+async function readReservas() {
+  try {
+    const data = await fs.readFile(RESERVAS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
 
-    const s = ensureState(from);
-    pushHistory(from, 'user', processedText);
+async function writeReservas(reservas) {
+  await fs.writeFile(RESERVAS_FILE, JSON.stringify(reservas, null, 2));
+}
 
-    // --- Comandos básicos ---
-    if (low.startsWith('/set owner ')) {
-      const id = processedText.split(' ')[2] || null;
-      BOT_CONFIG.ownerWhatsappId = id;
-      saveData(CONFIG_PATH, BOT_CONFIG);
-      return msg.reply(`Owner seteado en: ${id}`);
-    }
+async function readScheduledMessages() {
+  try {
+    const data = await fs.readFile(SCHEDULED_MESSAGES_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
 
-    if (low === '/bot off') { s.botEnabled = false; setState(from, s); return msg.reply('👌 Bot desactivado.'); }
-    if (low === '/bot on')  { s.botEnabled = true;  setState(from, s); return msg.reply('💪 Bot activado.'); }
-    if (s.botEnabled === false) return;
+async function writeScheduledMessages(messages) {
+  await fs.writeFile(SCHEDULED_MESSAGES_FILE, JSON.stringify(messages, null, 2));
+}
 
-    if (low === '/start test') {
-      s.mode = 'barberia'; s.history = []; s.ctx = {}; setState(from, s);
-      const nombre = (BARBERIA_DATA.negocio && BARBERIA_DATA.negocio.nombre) ? BARBERIA_DATA.negocio.nombre : (BARBERIA_DATA.nombre || 'Demo');
-      return msg.reply(`*${nombre}* 💈 (Demo)\nEscríbeme como cliente.`);
-    }
-    if (low === '/end test')   { s.mode = 'cortex';   s.history = []; s.sales = { awaiting: 'confirm' }; setState(from, s); return msg.reply('¡Demo finalizada! ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp.'); }
+// ========== FUNCIONES DE SLOTS ==========
+function calcularSlotsUsados(horaInicio, duracionMin) {
+  const SLOT_BASE_MIN = 20;
+  const numSlots = Math.ceil(duracionMin / SLOT_BASE_MIN);
+  
+  const [hora, minuto] = horaInicio.split(':').map(Number);
+  const slots = [];
+  
+  for (let i = 0; i < numSlots; i++) {
+    const totalMin = hora * 60 + minuto + (i * SLOT_BASE_MIN);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    slots.push(h * 3 + Math.floor(m / 20));
+  }
+  
+  return slots;
+}
 
-    // ======= MODO BARBERÍA =======
-    if (s.mode === 'barberia') {
-      try {
-        const isCancellation = detectCancelacion(processedText);
-        if (isCancellation) {
-          // podrías setear s.ctx.bookingToCancel según tu flujo
-        }
-        const slots = generarSlotsDemo(3);
-        let promptSystem = getPromptDemoBarberia(slots);
-        if (s.ctx?.bookingToCancel) {
-          promptSystem += `\n\nContexto: Cancelar cita ID ${s.ctx.bookingToCancel}? Si confirma, incluye <CANCELLED: {"id": "${s.ctx.bookingToCancel}"}>.`;
-        }
+function formatearHora(horaInicio) {
+  const [h, m] = horaInicio.split(':').map(Number);
+  const periodo = h >= 12 ? 'PM' : 'AM';
+  const hora12 = h > 12 ? h - 12 : (h === 0 ? 12 : h);
+  return `${hora12}:${m.toString().padStart(2, '0')} ${periodo}`;
+}
 
-        const messages = [{ role: 'system', content: promptSystem }, ...s.history.slice(-MAX_TURNS)];
-        const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 350 });
-        let reply = completion.choices?.[0]?.message?.content?.trim() || 'No te entendí, ¿me repites porfa?';
-        const bookingMatch = reply.match(/<BOOKING:\s*({.*?})\s*>/);
-        const cancelledMatch = reply.match(/<CANCELLED:\s*({.*?})\s*>/);
+// ========== CARGAR CONFIGURACIÓN DE BARBERÍA ==========
+let BARBERIA_CONFIG = null;
 
-        if (bookingMatch?.[1]) {
-          try {
-            const booking = JSON.parse(bookingMatch[1]);
-            await addReserva(from, booking.fecha, booking.hora_inicio, booking.servicio, booking.slots_usados || [], booking.nombreCliente || "Cliente");
-          } catch (_) {}
-        } else if (cancelledMatch?.[1]) {
-          try {
-            const data = JSON.parse(cancelledMatch[1]);
-            await removeReserva(from, data.id);
-          } catch (_) {}
-        }
-
-        pushHistory(from, 'assistant', reply);
-        setState(from, s);
-        return msg.reply(reply);
-
-      } catch (e) {
-        console.error('[Barbería] Error:', e);
-        return msg.reply('Uy, se me enredó algo aquí. ¿Puedes escribirlo de nuevo? 🙏');
-      }
-    }
-
-    // ======= MODO VENTAS =======
-    if (s.mode === 'cortex') {
-      try {
-        if (s.sales?.awaiting === 'confirm') {
-          const yes = /^(si|sí|dale|me interesa|brutal|ok|perfecto)\b/i.test(low);
-          if (yes) {
-            s.sales.awaiting = 'schedule';
-            setState(from, s);
-            return msg.reply('¡Excelente! Te paso dos opciones: ¿te sirve mañana a las 10:00 am o 4:00 pm para afinarlo y dejarlo en tu WhatsApp?');
-          }
-        }
-
-        const messages = [{ role: 'system', content: PROMPT_VENTAS }, ...s.history.slice(-MAX_TURNS)];
-        const completion = await safeChatCall({ model: 'gpt-4o-mini', messages, max_tokens: 250 });
-        let reply = completion.choices?.[0]?.message?.content?.trim() || '¿En qué te puedo ayudar hoy con tu negocio? 🙂';
-        if (s.sales?.awaiting !== 'schedule' && Math.random() < 0.6) {
-          reply += `\n\n${pick(CTAs)}`;
-        }
-
-        pushHistory(from, 'assistant', reply);
-        setState(from, s);
-        return msg.reply(reply);
-
-      } catch (e) {
-        console.error('[Ventas] Error:', e);
-        return msg.reply('Se me trabó la mente un segundito. ¿Puedes repetirlo, porfa?');
-      }
-    }
-
+async function cargarConfigBarberia() {
+  try {
+    const data = await fs.readFile(path.join(__dirname, 'barberia_base.txt'), 'utf8');
+    BARBERIA_CONFIG = JSON.parse(data);
+    console.log('✅ Configuración de barbería cargada');
   } catch (error) {
-    console.error('****** ¡ERROR CAPTURADO EN HANDLER! ******\n', error, '\n****************************************');
-    try { await msg.reply('Ups, algo salió mal. Inténtalo de nuevo.'); } catch (e) { console.error("Error enviando msg de error:", e.message); }
+    console.error('❌ Error cargando barberia_base.txt:', error);
+    BARBERIA_CONFIG = { servicios: {} };
+  }
+}
+
+// ========== CARGAR PROMPT DE VENTAS ==========
+let VENTAS_PROMPT = '';
+
+async function cargarVentasPrompt() {
+  try {
+    VENTAS_PROMPT = await fs.readFile(path.join(__dirname, 'ventas.txt'), 'utf8');
+    console.log('✅ Prompt de ventas cargado');
+  } catch (error) {
+    console.error('❌ Error cargando ventas.txt:', error);
+  }
+}
+
+// ========== ESTADO DE USUARIO ==========
+const userStates = new Map();
+
+function getUserState(userId) {
+  if (!userStates.has(userId)) {
+    userStates.set(userId, {
+      mode: 'sales', // 'sales' o 'demo'
+      conversationHistory: [],
+      botEnabled: true
+    });
+  }
+  return userStates.get(userId);
+}
+
+// ========== PROCESAMIENTO DE TAGS ==========
+async function procesarTags(mensaje, chatId) {
+  const bookingMatch = mensaje.match(/<BOOKING:\s*({[^>]+})>/);
+  const cancelMatch = mensaje.match(/<CANCELLED:\s*({[^>]+})>/);
+  
+  if (bookingMatch) {
+    try {
+      const bookingData = JSON.parse(bookingMatch[1]);
+      
+      // Agregar ID único y chatId
+      bookingData.id = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      bookingData.chatId = chatId;
+      bookingData.createdAt = new Date().toISOString();
+      bookingData.status = 'confirmed';
+      
+      // Guardar en user_bookings.json
+      const bookings = await readBookings();
+      bookings.push(bookingData);
+      await writeBookings(bookings);
+      
+      // Actualizar demo_reservas.json
+      const reservas = await readReservas();
+      if (!reservas[bookingData.fecha]) {
+        reservas[bookingData.fecha] = [];
+      }
+      
+      const horaFormateada = formatearHora(bookingData.hora_inicio);
+      if (!reservas[bookingData.fecha].includes(horaFormateada)) {
+        reservas[bookingData.fecha].push(horaFormateada);
+      }
+      
+      await writeReservas(reservas);
+      
+      // Programar confirmación 2 horas antes
+      await programarConfirmacion(bookingData);
+      
+      // Programar recordatorio 30 minutos antes
+      await programarRecordatorio(bookingData);
+      
+      // Programar solicitud de reseña (1 día después)
+      await programarResena(bookingData);
+      
+      // Programar mensaje "Te extrañamos" (2 semanas después)
+      await programarExtranamos(bookingData);
+      
+      console.log('✅ Booking guardado:', bookingData.id);
+      
+      // Notificar al dueño
+      await notificarDueno(`📅 *Nueva cita agendada*\n\n👤 Cliente: ${bookingData.nombreCliente}\n🔧 Servicio: ${bookingData.servicio}\n📆 Fecha: ${bookingData.fecha}\n⏰ Hora: ${horaFormateada}`);
+      
+    } catch (error) {
+      console.error('❌ Error procesando BOOKING:', error);
+    }
+    
+    // Eliminar el tag del mensaje
+    return mensaje.replace(/<BOOKING:[^>]+>/, '').trim();
+  }
+  
+  if (cancelMatch) {
+    try {
+      const cancelData = JSON.parse(cancelMatch[1]);
+      const bookings = await readBookings();
+      
+      const booking = bookings.find(b => b.id === cancelData.id);
+      if (booking) {
+        booking.status = 'cancelled';
+        await writeBookings(bookings);
+        
+        // Actualizar demo_reservas.json
+        const reservas = await readReservas();
+        if (reservas[booking.fecha]) {
+          const horaFormateada = formatearHora(booking.hora_inicio);
+          reservas[booking.fecha] = reservas[booking.fecha].filter(h => h !== horaFormateada);
+          await writeReservas(reservas);
+        }
+        
+        console.log('✅ Booking cancelado:', cancelData.id);
+        
+        // Notificar al dueño
+        await notificarDueno(`❌ *Cita cancelada*\n\n👤 Cliente: ${booking.nombreCliente}\n🔧 Servicio: ${booking.servicio}\n📆 Fecha: ${booking.fecha}\n⏰ Hora: ${formatearHora(booking.hora_inicio)}`);
+      }
+    } catch (error) {
+      console.error('❌ Error procesando CANCELLED:', error);
+    }
+    
+    return mensaje.replace(/<CANCELLED:[^>]+>/, '').trim();
+  }
+  
+  return mensaje;
+}
+
+// ========== NOTIFICAR AL DUEÑO ==========
+async function notificarDueno(mensaje) {
+  try {
+    const chatId = `${OWNER_NUMBER}@c.us`;
+    await client.sendMessage(chatId, mensaje);
+    console.log('✅ Notificación enviada al dueño');
+  } catch (error) {
+    console.error('❌ Error notificando al dueño:', error);
+  }
+}
+
+// ========== PROGRAMAR CONFIRMACIÓN 2H ANTES ==========
+async function programarConfirmacion(booking) {
+  try {
+    const [year, month, day] = booking.fecha.split('-').map(Number);
+    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
+    
+    const fechaCita = DateTime.fromObject({
+      year, month, day, hour: hora, minute: minuto
+    }, { zone: TIMEZONE });
+    
+    const fechaConfirmacion = fechaCita.minus({ hours: 2 });
+    
+    if (fechaConfirmacion > DateTime.now()) {
+      const messages = await readScheduledMessages();
+      messages.push({
+        id: `confirm_${booking.id}`,
+        chatId: booking.chatId,
+        scheduledFor: fechaConfirmacion.toISO(),
+        type: 'confirmation',
+        message: `👋 Hola ${booking.nombreCliente}! Te recordamos tu cita de *${booking.servicio}* hoy a las ${formatearHora(booking.hora_inicio)}.\n\n¿Confirmas que asistirás? Responde *SÍ* o *NO*.`,
+        bookingId: booking.id
+      });
+      await writeScheduledMessages(messages);
+      console.log('✅ Confirmación programada para', fechaConfirmacion.toISO());
+    }
+  } catch (error) {
+    console.error('❌ Error programando confirmación:', error);
+  }
+}
+
+// ========== PROGRAMAR RECORDATORIO 30MIN ANTES ==========
+async function programarRecordatorio(booking) {
+  try {
+    const [year, month, day] = booking.fecha.split('-').map(Number);
+    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
+    
+    const fechaCita = DateTime.fromObject({
+      year, month, day, hour: hora, minute: minuto
+    }, { zone: TIMEZONE });
+    
+    const fechaRecordatorio = fechaCita.minus({ minutes: 30 });
+    
+    if (fechaRecordatorio > DateTime.now()) {
+      const messages = await readScheduledMessages();
+      messages.push({
+        id: `reminder_${booking.id}`,
+        chatId: booking.chatId,
+        scheduledFor: fechaRecordatorio.toISO(),
+        type: 'reminder',
+        message: `⏰ *Recordatorio*\n\nHola ${booking.nombreCliente}! Tu cita de *${booking.servicio}* es en 30 minutos (${formatearHora(booking.hora_inicio)}).\n\nNos vemos pronto! 💈`,
+        bookingId: booking.id
+      });
+      await writeScheduledMessages(messages);
+      console.log('✅ Recordatorio programado para', fechaRecordatorio.toISO());
+    }
+  } catch (error) {
+    console.error('❌ Error programando recordatorio:', error);
+  }
+}
+
+// ========== PROGRAMAR SOLICITUD DE RESEÑA (1 DÍA DESPUÉS) ==========
+async function programarResena(booking) {
+  try {
+    const [year, month, day] = booking.fecha.split('-').map(Number);
+    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
+    
+    const fechaCita = DateTime.fromObject({
+      year, month, day, hour: hora, minute: minuto
+    }, { zone: TIMEZONE });
+    
+    const fechaResena = fechaCita.plus({ days: 1, hours: 2 }); // 1 día + 2 horas después
+    
+    if (fechaResena > DateTime.now()) {
+      const messages = await readScheduledMessages();
+      messages.push({
+        id: `review_${booking.id}`,
+        chatId: booking.chatId,
+        scheduledFor: fechaResena.toISO(),
+        type: 'review',
+        message: `⭐ Hola ${booking.nombreCliente}!\n\nEsperamos que hayas quedado muy contento con tu *${booking.servicio}* 😊\n\n¿Nos ayudas con una reseña en Google? Nos ayuda mucho a seguir creciendo:\n\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias por tu apoyo! 💈`,
+        bookingId: booking.id
+      });
+      await writeScheduledMessages(messages);
+      console.log('✅ Solicitud de reseña programada para', fechaResena.toISO());
+    }
+  } catch (error) {
+    console.error('❌ Error programando reseña:', error);
+  }
+}
+
+// ========== PROGRAMAR MENSAJE "TE EXTRAÑAMOS" (2 SEMANAS DESPUÉS) ==========
+async function programarExtranamos(booking) {
+  try {
+    const [year, month, day] = booking.fecha.split('-').map(Number);
+    const [hora, minuto] = booking.hora_inicio.split(':').map(Number);
+    
+    const fechaCita = DateTime.fromObject({
+      year, month, day, hour: hora, minute: minuto
+    }, { zone: TIMEZONE });
+    
+    const fechaExtranamos = fechaCita.plus({ weeks: 2 });
+    
+    if (fechaExtranamos > DateTime.now()) {
+      const messages = await readScheduledMessages();
+      messages.push({
+        id: `winback_${booking.id}`,
+        chatId: booking.chatId,
+        scheduledFor: fechaExtranamos.toISO(),
+        type: 'winback',
+        message: `👋 Hola ${booking.nombreCliente}! ¿Cómo vas?\n\nYa hace un tiempo que no te vemos por aquí 🙁\n\n*¡Tenemos un 10% de descuento especial para ti!* 🎉\n\n¿Agendamos tu próxima cita? 💈`,
+        bookingId: booking.id
+      });
+      await writeScheduledMessages(messages);
+      console.log('✅ Mensaje "Te extrañamos" programado para', fechaExtranamos.toISO());
+    }
+  } catch (error) {
+    console.error('❌ Error programando mensaje "Te extrañamos":', error);
+  }
+}
+
+// ========== ENVIAR MENSAJES PROGRAMADOS ==========
+async function enviarMensajesProgramados() {
+  try {
+    const messages = await readScheduledMessages();
+    const now = DateTime.now();
+    const pendientes = [];
+    
+    for (const msg of messages) {
+      const scheduledTime = DateTime.fromISO(msg.scheduledFor);
+      
+      if (scheduledTime <= now) {
+        // Enviar mensaje
+        try {
+          await client.sendMessage(msg.chatId, msg.message);
+          console.log(`✅ Mensaje ${msg.type} enviado:`, msg.id);
+        } catch (error) {
+          console.error(`❌ Error enviando mensaje ${msg.id}:`, error);
+          // Si falla, lo guardamos para reintentar
+          pendientes.push(msg);
+        }
+      } else {
+        pendientes.push(msg);
+      }
+    }
+    
+    await writeScheduledMessages(pendientes);
+  } catch (error) {
+    console.error('❌ Error en enviarMensajesProgramados:', error);
+  }
+}
+
+// Ejecutar cada minuto
+setInterval(enviarMensajesProgramados, 60000);
+
+// ========== COMANDO /show bookings ==========
+async function mostrarReservas(chatId) {
+  try {
+    const bookings = await readBookings();
+    const ahora = DateTime.now().setZone(TIMEZONE);
+    
+    const citasFuturas = bookings.filter(b => {
+      if (b.status === 'cancelled') return false;
+      const [year, month, day] = b.fecha.split('-').map(Number);
+      const fechaCita = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
+      return fechaCita >= ahora.startOf('day');
+    });
+    
+    if (citasFuturas.length === 0) {
+      return '📅 *No hay citas programadas*\n\nNo tienes citas futuras en este momento.';
+    }
+    
+    citasFuturas.sort((a, b) => {
+      const dateA = new Date(a.fecha + 'T' + a.hora_inicio);
+      const dateB = new Date(b.fecha + 'T' + b.hora_inicio);
+      return dateA - dateB;
+    });
+    
+    let mensaje = '📅 *CITAS PROGRAMADAS*\n\n';
+    
+    citasFuturas.forEach((cita, index) => {
+      const [year, month, day] = cita.fecha.split('-').map(Number);
+      const fechaDT = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
+      const fechaLegible = fechaDT.setLocale('es').toFormat('EEEE d \'de\' MMMM');
+      
+      mensaje += `${index + 1}. 👤 *${cita.nombreCliente}*\n`;
+      mensaje += `   🔧 ${cita.servicio}\n`;
+      mensaje += `   📆 ${fechaLegible}\n`;
+      mensaje += `   ⏰ ${formatearHora(cita.hora_inicio)}\n\n`;
+    });
+    
+    return mensaje.trim();
+  } catch (error) {
+    console.error('❌ Error en mostrarReservas:', error);
+    return '❌ Error al cargar las reservas. Intenta de nuevo.';
+  }
+}
+
+// ========== COMANDO /send later ==========
+async function programarMensajePersonalizado(args, fromChatId) {
+  try {
+    // Formato esperado: /send later "numero" "fecha hora" "mensaje"
+    // Ejemplo: /send later "573001234567" "2025-10-25 10:30" "Hola! Recordatorio de tu cotización"
+    
+    const regex = /"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"/;
+    const match = args.match(regex);
+    
+    if (!match) {
+      return '❌ Formato incorrecto.\n\nUso correcto:\n`/send later "573001234567" "2025-10-25 10:30" "Tu mensaje aquí"`\n\n📝 Formato de fecha: YYYY-MM-DD HH:MM';
+    }
+    
+    const [, numero, fechaHora, mensaje] = match;
+    
+    // Validar número (debe empezar con código de país)
+    if (!/^\d{10,15}$/.test(numero)) {
+      return '❌ Número inválido. Debe incluir código de país sin + (ej: 573001234567)';
+    }
+    
+    // Parsear fecha y hora
+    const fechaHoraDT = DateTime.fromFormat(fechaHora, 'yyyy-MM-dd HH:mm', { zone: TIMEZONE });
+    
+    if (!fechaHoraDT.isValid) {
+      return '❌ Fecha/hora inválida.\n\nFormato correcto: YYYY-MM-DD HH:MM\nEjemplo: 2025-10-25 14:30';
+    }
+    
+    if (fechaHoraDT <= DateTime.now()) {
+      return '❌ La fecha/hora debe ser futura.';
+    }
+    
+    // Guardar mensaje programado
+    const messages = await readScheduledMessages();
+    const nuevoMensaje = {
+      id: `custom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      chatId: `${numero}@c.us`,
+      scheduledFor: fechaHoraDT.toISO(),
+      type: 'custom',
+      message: mensaje,
+      scheduledBy: fromChatId
+    };
+    
+    messages.push(nuevoMensaje);
+    await writeScheduledMessages(messages);
+    
+    const fechaLegible = fechaHoraDT.setLocale('es').toFormat('EEEE d \'de\' MMMM \'a las\' HH:mm');
+    
+    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automáticamente en la fecha indicada.`;
+    
+  } catch (error) {
+    console.error('❌ Error en programarMensajePersonalizado:', error);
+    return '❌ Error al programar el mensaje. Revisa el formato e intenta de nuevo.';
+  }
+}
+
+// ========== CHAT CON OPENAI ==========
+async function chatWithAI(userMessage, userId, chatId) {
+  const state = getUserState(userId);
+  
+  // Comandos especiales
+  if (userMessage.toLowerCase().includes('/bot off')) {
+    state.botEnabled = false;
+    return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.';
+  }
+  
+  if (userMessage.toLowerCase().includes('/bot on')) {
+    state.botEnabled = true;
+    return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪';
+  }
+  
+  if (userMessage.toLowerCase().includes('/show bookings')) {
+    return await mostrarReservas(chatId);
+  }
+  
+  if (userMessage.toLowerCase().startsWith('/send later')) {
+    const args = userMessage.replace('/send later', '').trim();
+    return await programarMensajePersonalizado(args, chatId);
+  }
+  
+  if (!state.botEnabled) {
+    return null; // No responder si el bot está desactivado
+  }
+  
+  // Cambiar entre modo ventas y demo
+  if (userMessage.toLowerCase().includes('/start test')) {
+    state.mode = 'demo';
+    state.conversationHistory = [];
+    return '✅ *Demo activada*\n\nAhora estás hablando con el Asistente Cortex Barbershop. Puedes probar agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.';
+  }
+  
+  if (userMessage.toLowerCase().includes('/end test')) {
+    state.mode = 'sales';
+    state.conversationHistory = [];
+    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?';
+  }
+  
+  // Detectar si el bot no sabe responder y alertar al dueño
+  const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
+  const esEmergencia = palabrasEmergencia.some(p => userMessage.toLowerCase().includes(p));
+  
+  if (esEmergencia) {
+    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`);
+  }
+  
+  // Construir contexto según el modo
+  let systemPrompt = '';
+  
+  if (state.mode === 'demo') {
+    // Modo Demo: Asistente de Barbería
+    const hoy = DateTime.now().setZone(TIMEZONE);
+    const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE');
+    const fechaHoyTxt = hoy.toFormat('yyyy-MM-dd');
+    
+    // Leer reservas existentes
+    const reservas = await readReservas();
+    const reservasHoy = reservas[fechaHoyTxt] || [];
+    
+    // Construir system prompt desde barberia_base.txt
+    if (BARBERIA_CONFIG && BARBERIA_CONFIG.system_prompt) {
+      systemPrompt = BARBERIA_CONFIG.system_prompt
+        .replace(/{hoy}/g, fechaHoyTxt)
+        .replace(/{diaSemana}/g, diaSemanaTxt)
+        .replace(/{nombreBarberia}/g, BARBERIA_CONFIG.negocio?.nombre || 'Barbería')
+        .replace(/{direccionBarberia}/g, BARBERIA_CONFIG.negocio?.direccion || '')
+        .replace(/{telefonoBarberia}/g, BARBERIA_CONFIG.negocio?.telefono || '')
+        .replace(/{horarioLv}/g, BARBERIA_CONFIG.horario?.lun_vie || '')
+        .replace(/{horarioS}/g, BARBERIA_CONFIG.horario?.sab || '')
+        .replace(/{horarioD}/g, BARBERIA_CONFIG.horario?.dom || '')
+        .replace(/{horarioHoy}/g, BARBERIA_CONFIG.horario?.lun_vie || '')
+        .replace(/{serviciosTxt}/g, generarTextoServicios())
+        .replace(/{faqsBarberia}/g, generarTextoFAQs())
+        .replace(/{pagosBarberia}/g, BARBERIA_CONFIG.pagos?.join(', ') || '')
+        .replace(/{upsellText}/g, BARBERIA_CONFIG.upsell || '')
+        .replace(/{slotsTxt}/g, `Hoy hay ${reservasHoy.length} reservas: ${reservasHoy.join(', ')}`);
+    }
+  } else {
+    // Modo Ventas
+    systemPrompt = VENTAS_PROMPT || 'Eres un asistente de ventas profesional.';
+  }
+  
+  // Agregar mensaje del usuario al historial
+  state.conversationHistory.push({
+    role: 'user',
+    content: userMessage
+  });
+  
+  // Limitar historial a últimos 20 mensajes
+  if (state.conversationHistory.length > 20) {
+    state.conversationHistory = state.conversationHistory.slice(-20);
+  }
+  
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...state.conversationHistory
+      ],
+      temperature: state.mode === 'demo' ? 0.4 : 0.6,
+      max_tokens: 500
+    });
+    
+    let respuesta = completion.choices[0].message.content.trim();
+    
+    // Procesar tags (solo en modo demo)
+    if (state.mode === 'demo') {
+      respuesta = await procesarTags(respuesta, chatId);
+    }
+    
+    // Detectar si el bot no sabe responder
+    const frasesNoSabe = [
+      'no estoy seguro',
+      'no tengo esa información',
+      'no puedo ayudarte con eso',
+      'necesito confirmarlo',
+      'no sé'
+    ];
+    
+    const noSabeResponder = frasesNoSabe.some(frase => respuesta.toLowerCase().includes(frase));
+    
+    if (noSabeResponder) {
+      await notificarDueno(`❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta del bot: "${respuesta}"\n\n💡 Puede requerir tu atención.`);
+    }
+    
+    // Agregar respuesta al historial
+    state.conversationHistory.push({
+      role: 'assistant',
+      content: respuesta
+    });
+    
+    return respuesta;
+    
+  } catch (error) {
+    console.error('❌ Error en OpenAI:', error);
+    await notificarDueno(`❌ *ERROR DEL BOT*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\nError: ${error.message}\n\n⚠️ Sistema requiere revisión.`);
+    return '❌ Disculpa, tuve un problema técnico. ¿Puedes repetir tu pregunta?';
+  }
+}
+
+// ========== FUNCIONES AUXILIARES PARA SYSTEM PROMPT ==========
+function generarTextoServicios() {
+  if (!BARBERIA_CONFIG || !BARBERIA_CONFIG.servicios) return '';
+  
+  const servicios = Object.entries(BARBERIA_CONFIG.servicios);
+  return servicios.map(([nombre, datos]) => {
+    const emoji = datos.emoji || '✂️';
+    return `${emoji} ${nombre} — ${datos.precio.toLocaleString()} — ${datos.min} min`;
+  }).join('\n');
+}
+
+function generarTextoFAQs() {
+  if (!BARBERIA_CONFIG || !BARBERIA_CONFIG.faqs) return '';
+  
+  return BARBERIA_CONFIG.faqs.map((faq, i) => {
+    return `${i + 1}. ${faq.q}\n   → ${faq.a}`;
+  }).join('\n\n');
+}
+
+// ========== EVENTOS DE WHATSAPP ==========
+client.on('qr', (qr) => {
+  console.log('📱 Escanea el código QR:');
+  qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', async () => {
+  console.log('✅ Cliente de WhatsApp listo!');
+  await initDataFiles();
+  await cargarConfigBarberia();
+  await cargarVentasPrompt();
+});
+
+client.on('message', async (message) => {
+  try {
+    // Ignorar mensajes de grupos y del propio bot
+    if (message.from.includes('@g.us') || message.fromMe) return;
+    
+    const userId = message.from;
+    const userMessage = message.body;
+    
+    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
+    
+    // Verificar si el bot está habilitado para este usuario
+    const state = getUserState(userId);
+    
+    // Comandos que funcionan aunque el bot esté off
+    const comandosEspeciales = ['/bot on', '/bot off', '/show bookings', '/send later'];
+    const esComandoEspecial = comandosEspeciales.some(cmd => userMessage.toLowerCase().includes(cmd));
+    
+    if (!state.botEnabled && !esComandoEspecial) {
+      return; // No responder
+    }
+    
+    // Procesar con IA
+    const respuesta = await chatWithAI(userMessage, userId, message.from);
+    
+    if (respuesta) {
+      // Simular tiempo de escritura humano
+      await message.reply('_escribiendo..._');
+      await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+      
+      await message.reply(respuesta);
+    }
+    
+  } catch (error) {
+    console.error('❌ Error procesando mensaje:', error);
+    await notificarDueno(`❌ *ERROR CRÍTICO*\n\nError procesando mensaje de ${message.from}\n\nDetalles: ${error.message}`);
   }
 });
 
-process.on('unhandledRejection', (reason, promise) => { console.error('Unhandled Rejection:', reason, promise); });
-client.initialize().catch(err => { console.error("ERROR INICIALIZAR:", err); });
+client.on('disconnected', (reason) => {
+  console.log('❌ Cliente desconectado:', reason);
+});
+
+// ========== INICIAR CLIENTE ==========
+console.log('🚀 Iniciando Cortex AI Bot...');
+client.initialize();
+
+// ========== MANEJO DE ERRORES GLOBAL ==========
+process.on('unhandledRejection', (error) => {
+  console.error('❌ Unhandled Rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+});
