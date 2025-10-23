@@ -461,6 +461,92 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   return alternativas;
 }
 
+// =======================
+// == CORRECCIÓN BUG 1 ==
+// =======================
+// NUEVA FUNCIÓN: Genera la lista de slots REALES disponibles para hoy
+async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
+  const reservas = await readReservas();
+  const slotsReservados = reservas[fecha] || [];
+  
+  const horario = BARBERIA_CONFIG?.horario || {};
+  const dia = DateTime.fromISO(fecha).setLocale('es').toFormat('EEEE').toLowerCase();
+  
+  let horarioStr = '';
+  if (dia.startsWith('sá')) horarioStr = horario.sab || '9:00-20:00';
+  else if (dia.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
+  else horarioStr = horario.lun_vie || '9:00-20:00';
+  
+  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado' || !horarioStr.includes('-')) {
+    return 'Hoy estamos cerrados.';
+  }
+  
+  const partes = horarioStr.split('-');
+  if (partes.length !== 2) return 'Horario no configurado.';
+  
+  const [inicio, fin] = partes.map(s => s.trim());
+  if (!inicio.includes(':') || !fin.includes(':')) return 'Horario no configurado.';
+
+  const [hInicio, mInicio] = inicio.split(':').map(Number);
+  const [hFin, mFin] = fin.split(':').map(Number);
+  if (isNaN(hInicio) || isNaN(mInicio) || isNaN(hFin) || isNaN(mFin)) return 'Horario no configurado.';
+  
+  const minutoInicio = hInicio * 60 + mInicio;
+  const minutoFin = hFin * 60 + mFin;
+  
+  const ahora = now();
+  const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
+  const esHoy = fechaConsulta.hasSame(ahora, 'day');
+  
+  let minutoActual = 0;
+  if (esHoy) {
+    const minAhora = ahora.hour * 60 + ahora.minute;
+    // Redondear al *siguiente* slot de 20 min + 1 min de buffer
+    minutoActual = Math.ceil((minAhora + 1) / 20) * 20; 
+  }
+  
+  const alternativas = [];
+  const baseIntervalo = 20; // Slots de 20 min
+  
+  let m = Math.max(minutoInicio, minutoActual);
+  if (m % baseIntervalo !== 0) {
+     m = Math.ceil(m / baseIntervalo) * baseIntervalo;
+  }
+
+  while (m <= minutoFin - duracionMinDefault) {
+    const horaStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    
+    // Verificar si este slot está disponible
+    const slotsNecesarios = calcularSlotsUsados(horaStr, duracionMinDefault);
+    let colision = false;
+    for (const slot of slotsNecesarios) {
+      if (slotsReservados.includes(slot)) {
+        colision = true;
+        break;
+      }
+      // Verificar que no se pase del cierre
+      const [slotH, slotM] = slot.split(':').map(Number);
+      if (slotH * 60 + slotM >= minutoFin) {
+          colision = true;
+          break;
+      }
+    }
+    
+    if (!colision) {
+      alternativas.push(formatearHora(horaStr)); // Agregar hora 12h
+    }
+    
+    m += baseIntervalo; // Siguiente slot
+  }
+  
+  if (alternativas.length === 0) {
+    return 'Ya no quedan cupos disponibles para hoy.';
+  }
+  
+  return `Horarios disponibles HOY: ${alternativas.join(', ')}.`;
+}
+
+
 // ========== TAGS ==========
 async function procesarTags(mensaje, chatId) {
   const bookingMatch = mensaje.match(/<BOOKING:\s*({[^>]+})>/);
@@ -547,7 +633,23 @@ async function procesarTags(mensaje, chatId) {
     try {
       const cancelData = JSON.parse(cancelMatch[1]);
       const bookings = await readBookings();
-      const b = bookings.find(x => x.id === cancelData.id);
+      
+      // =======================
+      // == CORRECCIÓN BUG 2 ==
+      // =======================
+      // Buscar cita por ID o por datos (nombre, fecha, hora)
+      let b = null;
+      if (cancelData.id) {
+          b = bookings.find(x => x.id === cancelData.id);
+      } else if (cancelData.nombreCliente && cancelData.fecha && cancelData.hora_inicio) {
+          // Buscar por datos si no hay ID
+          b = bookings.find(x => 
+              x.nombreCliente.toLowerCase() === cancelData.nombreCliente.toLowerCase() &&
+              x.fecha === cancelData.fecha &&
+              x.hora_inicio === cancelData.hora_inicio &&
+              x.status !== 'cancelled' // Solo cancelar citas activas
+          );
+      }
       
       if (b) {
         b.status = 'cancelled';
@@ -563,17 +665,16 @@ async function procesarTags(mensaje, chatId) {
           await writeReservas(reservas);
         }
         
-        // =======================
-        // == CORRECCIÓN AQUÍ ==
-        // =======================
-        // Se usa 'chatId' (quién está hablando) en lugar de 'b.chatId' (quién reservó)
-        // para que la lógica de 'notificarDueno' sea consistente.
+        // Se usa 'chatId' (quién está hablando) para la lógica de 'notificarDueno'
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`,
           chatId 
         );
         
-        console.log('✅ Booking cancelado:', cancelData.id);
+        console.log('✅ Booking cancelado:', b.id);
+      } else {
+        console.warn('⚠️ No se encontró cita para cancelar con datos:', cancelData);
+        return "No pude encontrar la cita que mencionas para cancelar. ¿Puedes confirmar el nombre, fecha y hora exactos?";
       }
     } catch (e) { 
       console.error('CANCELLED parse error:', e); 
@@ -1183,8 +1284,12 @@ async function chatWithAI(userMessage, userId, chatId) {
     const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
     const fechaISO = hoy.toFormat('yyyy-MM-dd');
     
-    const reservas = await readReservas(); 
-    const reservasHoy = reservas[fechaISO] || [];
+    // =======================
+    // == CORRECCIÓN BUG 1 ==
+    // =======================
+    // Generar la lista de slots disponibles REALES, filtrando horas pasadas
+    const duracionDefault = 40; // Duración base para calcular la lista de slots
+    const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
     
     const horario = BARBERIA_CONFIG?.horario || {}; 
     const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
@@ -1211,20 +1316,19 @@ async function chatWithAI(userMessage, userId, chatId) {
     // Obtener hora actual en formato legible
     const horaActual = hoy.toFormat('h:mm a');
     
-    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.` + 
-      `\nReglas para agendar: 1.Pregunta servicio 2.Da precio/duración 3.Pide día/hora 4.Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR 5.Si no te han dado nombre, pide nombre completo 6.Confirma y emite <BOOKING:{...}>.` + 
+    // ======================================
+    // == CORRECCIONES BUG 1 y 2 en FALLBACK ==
+    // ======================================
+    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL (solo referencia)=${horaActual}.` + 
+      `\nReglas para agendar: 1.Pregunta servicio 2.Da precio/duración 3.Ofrece los horarios de la lista de DISPONIBLES. 4.Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR 5.Si no te han dado nombre, pide nombre completo 6.Confirma y emite <BOOKING:{...}>.` + 
+      `\nReglas para CANCELAR: 1.Pide nombre, fecha y hora de la cita a cancelar. 2.Confirma los datos. 3.Emite <CANCELLED:{"nombreCliente":"(nombre)","fecha":"(yyyy-mm-dd)","hora_inicio":"(hh:mm)"}>.` +
       `\nIMPORTANTE: Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.` +
-      `\n⏰ CRÍTICO: Son las ${horaActual}. NO ofrezcas horarios que ya pasaron (antes de ${horaActual}). Solo ofrece horarios FUTUROS.` +
-      `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
+      `\n⏰ CRÍTICO: USA ESTA LISTA DE HORARIOS DISPONIBLES (ignora la hora actual, la lista ya está filtrada):` +
+      `\n{slotsDisponiblesHoy}` +
+      `\n\n---` +
+      `\nHorario general: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
     
-    // Generar lista de horas ocupadas en formato legible
-    let horasOcupadasTxt = '';
-    if (reservasHoy.length > 0) {
-      const horasFormateadas = reservasHoy.map(slot => formatearHora(slot)).filter((v, i, a) => a.indexOf(v) === i); // Eliminar duplicados
-      horasOcupadasTxt = `\n\n⚠️ HORARIOS OCUPADOS HOY: ${horasFormateadas.join(', ')}. NO ofrezcas estos horarios, están RESERVADOS.`;
-    }
-    
-    systemPrompt = (plantilla || fallback + horasOcupadasTxt)
+    systemPrompt = (plantilla || fallback)
       .replace(/{hoy}/g, fechaISO)
       .replace(/{horaActual}/g, horaActual)
       .replace(/{diaSemana}/g, diaSemanaTxt)
@@ -1239,7 +1343,8 @@ async function chatWithAI(userMessage, userId, chatId) {
       .replace(/{faqsBarberia}/g, faqsTxt)
       .replace(/{pagosBarberia}/g, pagosTxt)
       .replace(/{upsellText}/g, upsell)
-      .replace(/{horasOcupadasHoy}/g, horasOcupadasTxt);
+      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt) // Token para la nueva lista
+      .replace(/{horasOcupadasHoy}/g, ''); // Limpiar token viejo por si acaso
       
   } else {
     // MODO VENTAS
