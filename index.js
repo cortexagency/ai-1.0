@@ -386,7 +386,6 @@ async function procesarTags(mensaje, chatId) {
       
       // Notificar al dueño
       await notificarDueno(`📅 *Nueva cita agendada*\n\n👤 Cliente: ${bookingData.nombreCliente}\n🔧 Servicio: ${bookingData.servicio}\n📆 Fecha: ${bookingData.fecha}\n⏰ Hora: ${horaFormateada}`);
-      
     } catch (error) {
       console.error('❌ Error procesando BOOKING:', error);
     }
@@ -694,7 +693,38 @@ async function programarMensajePersonalizado(args, fromChatId) {
 // ========== CHAT CON OPENAI ==========
 async function chatWithAI(userMessage, userId, chatId) {
   const state = getUserState(userId);
+
+  // 👇 **BLOQUE MOVIDO AQUÍ** (antes estaba pegado al final y rompía el archivo)
+  if (userMessage.toLowerCase().includes('/bot off')) {
+    state.botEnabled = false;
+    return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.';
+  }
   
+  if (userMessage.toLowerCase().includes('/bot on')) {
+    state.botEnabled = true;
+    return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪';
+  }
+  
+  if (userMessage.toLowerCase().includes('/show bookings')) {
+    return await mostrarReservas(chatId);
+  }
+  
+  if (userMessage.toLowerCase().startsWith('/send later')) {
+    const args = userMessage.replace('/send later', '').trim();
+    return await programarMensajePersonalizado(args, chatId);
+  }
+  
+  if (!state.botEnabled) {
+    return null; // No responder si el bot está desactivado
+  }
+  
+  // Cambiar entre modo ventas y demo
+  if (userMessage.toLowerCase().includes('/start test')) {
+    state.mode = 'demo';
+    state.conversationHistory = [];
+    return '✅ *Demo activada*\n\nAhora estás hablando con el Asistente Cortex Barbershop. Puedes probar agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.';
+  }
+
   // Comandos especiales
   if (userMessage.toLowerCase().includes('/end test')) {
     state.mode = 'sales';
@@ -892,34 +922,4 @@ process.on('unhandledRejection', (error) => {
 
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
-});.toLowerCase().includes('/bot off')) {
-    state.botEnabled = false;
-    return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.';
-  }
-  
-  if (userMessage.toLowerCase().includes('/bot on')) {
-    state.botEnabled = true;
-    return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪';
-  }
-  
-  if (userMessage.toLowerCase().includes('/show bookings')) {
-    return await mostrarReservas(chatId);
-  }
-  
-  if (userMessage.toLowerCase().startsWith('/send later')) {
-    const args = userMessage.replace('/send later', '').trim();
-    return await programarMensajePersonalizado(args, chatId);
-  }
-  
-  if (!state.botEnabled) {
-    return null; // No responder si el bot está desactivado
-  }
-  
-  // Cambiar entre modo ventas y demo
-  if (userMessage.toLowerCase().includes('/start test')) {
-    state.mode = 'demo';
-    state.conversationHistory = [];
-    return '✅ *Demo activada*\n\nAhora estás hablando con el Asistente Cortex Barbershop. Puedes probar agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.';
-  }
-  
-  if (userMessage
+});
