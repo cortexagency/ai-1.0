@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (Fixed: reply issue by reading prompts from /prompts + safe system prompt + reservas in /data)
+// CORTEX IA - INDEX.JS (FIXED: Bot now replies correctly)
 // =========================
 require('dotenv').config();
 
@@ -14,7 +14,7 @@ const OpenAI = require('openai');
 const { DateTime } = require('luxon');
 
 // ========== CONFIGURACIÓN ==========
-const OWNER_NUMBER = process.env.OWNER_NUMBER || '573001234567'; // Número del dueño (formato: 57... sin +)
+const OWNER_NUMBER = process.env.OWNER_NUMBER || '573001234567';
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
@@ -25,11 +25,11 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const PROMPTS_DIR = path.join(ROOT_DIR, 'prompts');
 
 const BOOKINGS_FILE = path.join(DATA_DIR, 'user_bookings.json');
-const RESERVAS_FILE = path.join(DATA_DIR, 'demo_reservas.json'); // ✅ en /data
+const RESERVAS_FILE = path.join(DATA_DIR, 'demo_reservas.json');
 const SCHEDULED_MESSAGES_FILE = path.join(DATA_DIR, 'scheduled_messages.json');
 
-const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt'); // ✅ en /prompts
-const VENTAS_PROMPT_PATH = path.join(PROMPTS_DIR, 'ventas.txt');        // ✅ en /prompts
+const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt');
+const VENTAS_PROMPT_PATH = path.join(PROMPTS_DIR, 'ventas.txt');
 
 // ========== OPENAI ==========
 if (!process.env.OPENAI_API_KEY) {
@@ -53,7 +53,7 @@ const client = new Client({
   authTimeout: 0,
 });
 
-// ========== EXPRESS (keep-alive / QR) ==========
+// ========== EXPRESS ==========
 const app = express();
 let latestQR = null;
 
@@ -85,7 +85,6 @@ async function initDataFiles() {
   await ensureDir(DATA_DIR);
   await ensureDir(PROMPTS_DIR);
 
-  // Archivos JSON base
   for (const [file, def] of [
     [BOOKINGS_FILE, []],
     [RESERVAS_FILE, {}],
@@ -105,13 +104,11 @@ async function writeJson(file, data) {
 }
 
 // ========== PROMPTS / CONFIG ==========
-let BARBERIA_CONFIG = null; // objeto JSON con negocio/horario/servicios/... + system_prompt
+let BARBERIA_CONFIG = null;
 let VENTAS_PROMPT = '';
 
 function parseFirstJsonBlock(text) {
-  // Intenta como JSON completo
   try { return JSON.parse(text); } catch (_) {}
-  // Extrae primer { ... } nivelado
   const s = text.indexOf('{'); if (s === -1) return null;
   let depth = 0;
   for (let i = s; i < text.length; i++) {
@@ -134,7 +131,6 @@ async function cargarConfigBarberia() {
       console.error('❌ barberia_base.txt no tiene JSON válido.');
       BARBERIA_CONFIG = { servicios: {}, horario: {}, negocio: {}, pagos: [], faqs: [], upsell: "", system_prompt: "" };
     } else {
-      // Normalizar estructura
       BARBERIA_CONFIG = parsed;
       if (!BARBERIA_CONFIG.negocio) {
         BARBERIA_CONFIG.negocio = {
@@ -289,6 +285,7 @@ async function programarConfirmacion(booking) {
     }
   } catch (e) { console.error('programarConfirmacion:', e.message); }
 }
+
 async function programarRecordatorio(booking) {
   try {
     const [y,m,d] = booking.fecha.split('-').map(Number);
@@ -307,6 +304,7 @@ async function programarRecordatorio(booking) {
     }
   } catch (e) { console.error('programarRecordatorio:', e.message); }
 }
+
 async function programarResena(booking) {
   try {
     const [y,m,d] = booking.fecha.split('-').map(Number);
@@ -325,6 +323,7 @@ async function programarResena(booking) {
     }
   } catch (e) { console.error('programarResena:', e.message); }
 }
+
 async function programarExtranamos(booking) {
   try {
     const [y,m,d] = booking.fecha.split('-').map(Number);
@@ -343,6 +342,7 @@ async function programarExtranamos(booking) {
     }
   } catch (e) { console.error('programarExtranamos:', e.message); }
 }
+
 setInterval(async () => {
   try {
     const messages = await readScheduledMessages();
@@ -367,43 +367,17 @@ function generarTextoServicios() {
     const min = s.min || 'N/A';
     const emoji = s.emoji || '✂️';
     return `${emoji} ${nombre} — $${precio} — ${min} min`;
-    }).join('\n');
+  }).join('\n');
 }
+
 function generarTextoFAQs() {
   if (!BARBERIA_CONFIG?.faqs) return '';
   return BARBERIA_CONFIG.faqs.map((f,i)=>`${i+1}. ${f.q}\n   → ${f.a}`).join('\n\n');
 }
 
 // ========== CHAT CORE ==========
-const userStatesMap = new Map();
-function getUserState2(id){ return getUserState(id); } // alias
-
 async function chatWithAI(userMessage, userId, chatId) {
-  const state = getUserState2(userId);
-
-  // Comandos que funcionan siempre
-  const low = (userMessage || '').toLowerCase();
-  if (low.includes('/bot off')) { state.botEnabled = false; return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.'; }
-  if (low.includes('/bot on'))  { state.botEnabled = true;  return '✅ Bot reactivado. Aquí estoy pa’ ayudarte 💪'; }
-  if (low.startsWith('/send later')) {
-    const args = userMessage.replace('/send later', '').trim();
-    return await programarMensajePersonalizado(args, chatId);
-  }
-  if (low.includes('/show bookings')) return await mostrarReservas(chatId);
-
-  if (!state.botEnabled) return null;
-
-  // Cambiar de modo
-  if (low.includes('/start test')) {
-    state.mode = 'demo';
-    state.conversationHistory = [];
-    return '✅ *Demo activada*\nHablas con el Asistente Cortex Barbershop. Puedes agendar, pedir precios, horarios, etc.\nEscribe `/end test` para salir.';
-  }
-  if (low.includes('/end test')) {
-    state.mode = 'sales';
-    state.conversationHistory = [];
-    return '✅ *Demo finalizada* — ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp. ¿Prefieres llamada de 10 min o pasos por aquí?';
-  }
+  const state = getUserState(userId);
 
   // Construir prompt del sistema
   let systemPrompt = '';
@@ -431,7 +405,6 @@ async function chatWithAI(userMessage, userId, chatId) {
 
     const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
 
-    // ✅ Fallback seguro por si system_prompt está vacío
     const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable y eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}.` +
     `\nReglas clave: pregunta servicio → da precio/duración → pide día/hora → si confirman hora pide nombre → confirma y emite <BOOKING:{...}>.` +
     `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
@@ -537,6 +510,7 @@ client.on('qr', (qr) => {
   latestQR = qr;
   qrcode.generate(qr, { small: true });
 });
+
 client.on('ready', async () => {
   console.log('✅ WhatsApp listo');
   latestQR = null;
@@ -544,27 +518,84 @@ client.on('ready', async () => {
   await cargarConfigBarberia();
   await cargarVentasPrompt();
 });
+
 client.on('message', async (message) => {
   try {
+    // Ignorar grupos y mensajes propios
     if (message.from.includes('@g.us') || message.fromMe) return;
+    
     const userId = message.from;
     const userMessage = (message.body || '').trim();
     const state = getUserState(userId);
 
-    const special = ['/bot on','/bot off','/show bookings','/send later'];
+    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
+
     const low = userMessage.toLowerCase();
-    const isSpecial = special.some(cmd => low.startsWith(cmd));
 
-    if (!state.botEnabled && !isSpecial) return;
+    // ✅ COMANDOS ESPECIALES (funcionan siempre, incluso con bot off)
+    if (low.includes('/bot off')) {
+      state.botEnabled = false;
+      await message.reply('✅ Bot desactivado. Escribe `/bot on` para reactivarlo.');
+      return;
+    }
+    
+    if (low.includes('/bot on')) {
+      state.botEnabled = true;
+      await message.reply('✅ Bot reactivado. Aquí estoy pa' ayudarte 💪');
+      return;
+    }
+    
+    if (low.includes('/show bookings')) {
+      const respuesta = await mostrarReservas(message.from);
+      await message.reply(respuesta);
+      return;
+    }
+    
+    if (low.startsWith('/send later')) {
+      const args = userMessage.replace('/send later', '').trim();
+      const respuesta = await programarMensajePersonalizado(args, message.from);
+      await message.reply(respuesta);
+      return;
+    }
 
-    const reply = await chatWithAI(userMessage, userId, message.from);
-    if (reply) await message.reply(reply);
+    // ✅ CAMBIO DE MODO (también funcionan siempre)
+    if (low.includes('/start test')) {
+      state.mode = 'demo';
+      state.conversationHistory = [];
+      await message.reply('✅ *Demo activada*\nHablas con el Asistente Cortex Barbershop. Puedes agendar, pedir precios, horarios, etc.\nEscribe `/end test` para salir.');
+      return;
+    }
+    
+    if (low.includes('/end test')) {
+      state.mode = 'sales';
+      state.conversationHistory = [];
+      await message.reply('✅ *Demo finalizada* — ¿Qué tal? Si te gustó, lo dejamos en tu WhatsApp. ¿Prefieres llamada de 10 min o pasos por aquí?');
+      return;
+    }
+
+    // ✅ VERIFICAR SI EL BOT ESTÁ HABILITADO
+    if (!state.botEnabled) {
+      // Bot está OFF, no responder a mensajes normales
+      return;
+    }
+
+    // ✅ PROCESAR CON IA
+    const respuesta = await chatWithAI(userMessage, userId, message.from);
+    
+    if (respuesta) {
+      await message.reply(respuesta);
+    }
+    
   } catch (e) {
-    console.error('message handler error:', e.message);
-    await notificarDueno(`❌ ERROR handler\n${e.message}`);
+    console.error('❌ Error procesando mensaje:', e.message);
+    await notificarDueno(`❌ ERROR handler\nUsuario: ${message.from}\nError: ${e.message}`);
   }
 });
-client.on('disconnected', (r) => { console.log('❌ Desconectado:', r); });
+
+client.on('disconnected', (r) => { 
+  console.log('❌ Desconectado:', r); 
+  latestQR = null;
+});
 
 // ========== START ==========
 console.log('🚀 Iniciando Cortex AI Bot...');
