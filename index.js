@@ -125,6 +125,7 @@ function parseFirstJsonBlock(text) {
 
 async function cargarConfigBarberia() {
   try {
+    console.log(`📖 Leyendo: ${BARBERIA_BASE_PATH}`);
     const raw = await fs.readFile(BARBERIA_BASE_PATH, 'utf8');
     const parsed = parseFirstJsonBlock(raw);
     if (!parsed || typeof parsed !== 'object') {
@@ -146,9 +147,10 @@ async function cargarConfigBarberia() {
       if (!BARBERIA_CONFIG.upsell) BARBERIA_CONFIG.upsell = "";
       if (typeof BARBERIA_CONFIG.system_prompt !== 'string') BARBERIA_CONFIG.system_prompt = "";
     }
-    console.log('✅ Cargado prompts/barberia_base.txt');
+    console.log(`✅ Cargado prompts/barberia_base.txt (${Object.keys(BARBERIA_CONFIG.servicios || {}).length} servicios)`);
   } catch (e) {
     console.error('❌ No se pudo leer prompts/barberia_base.txt:', e.message);
+    console.error(`   Ruta intentada: ${BARBERIA_BASE_PATH}`);
     BARBERIA_CONFIG = { servicios: {}, horario: {}, negocio: {}, pagos: [], faqs: [], upsell: "", system_prompt: "" };
   }
 }
@@ -517,6 +519,10 @@ client.on('ready', async () => {
   await initDataFiles();
   await cargarConfigBarberia();
   await cargarVentasPrompt();
+  console.log('📁 Archivos cargados:');
+  console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
+  console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
+  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
 });
 
 client.on('message', async (message) => {
@@ -541,7 +547,7 @@ client.on('message', async (message) => {
     
     if (low.includes('/bot on')) {
       state.botEnabled = true;
-      await message.reply('✅ Bot reactivado. Aquí estoy pa' ayudarte 💪');
+      await message.reply('✅ Bot reactivado. Aquí estoy pa\' ayudarte 💪');
       return;
     }
     
@@ -555,6 +561,14 @@ client.on('message', async (message) => {
       const args = userMessage.replace('/send later', '').trim();
       const respuesta = await programarMensajePersonalizado(args, message.from);
       await message.reply(respuesta);
+      return;
+    }
+
+    // ✅ RECARGAR CONFIGURACIÓN (solo para el dueño)
+    if (low === '/reload' && userId === `${OWNER_NUMBER}@c.us`) {
+      await cargarConfigBarberia();
+      await cargarVentasPrompt();
+      await message.reply('✅ *Configuración recargada*\n\n📁 Archivos actualizados:\n• barberia_base.txt\n• ventas.txt\n\nCambios aplicados ✨');
       return;
     }
 
