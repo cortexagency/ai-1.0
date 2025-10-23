@@ -1168,7 +1168,15 @@ async function chatWithAI(userMessage, userId, chatId) {
       `\nIMPORTANTE: Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.` +
       `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
     
-    systemPrompt = (plantilla || fallback)
+    // Generar lista de horas ocupadas en formato legible
+    let horasOcupadasTxt = '';
+    if (reservasHoy.length > 0) {
+      const horasFormateadas = reservasHoy.map(slot => formatearHora(slot)).filter((v, i, a) => a.indexOf(v) === i); // Eliminar duplicados
+      horasOcupadasTxt = `\n\n⚠️ HORARIOS OCUPADOS HOY: ${horasFormateadas.join(', ')}. NO ofrezcas estos horarios, están RESERVADOS.`;
+    }
+    
+    systemPrompt = (plantilla || fallback + horasOcupadasTxt)
+    systemPrompt = (plantilla || fallback + horasOcupadasTxt)
       .replace(/{hoy}/g, fechaISO)
       .replace(/{diaSemana}/g, diaSemanaTxt)
       .replace(/{nombreBarberia}/g, nombreBarberia)
@@ -1182,7 +1190,7 @@ async function chatWithAI(userMessage, userId, chatId) {
       .replace(/{faqsBarberia}/g, faqsTxt)
       .replace(/{pagosBarberia}/g, pagosTxt)
       .replace(/{upsellText}/g, upsell)
-      .replace(/{slotsTxt}/g, `Hoy ${reservasHoy.length ? 'ocupados' : 'libres'}: ${reservasHoy.join(', ') || 'sin ocupaciones'}`);
+      .replace(/{horasOcupadasHoy}/g, horasOcupadasTxt);
       
   } else {
     // MODO VENTAS
