@@ -15,8 +15,8 @@ const express = require('express');
 
 // ========== CONFIGURACIÓN ==========
 // *** CONFIGURACIÓN UNIFICADA DEL DUEÑO ***
-const OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554'; // Número sin @c.us
-const OWNER_CHAT_ID = `${OWNER_NUMBER}@c.us`; // Construido automáticamente
+let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554'; // Número sin @c.us
+let OWNER_CHAT_ID = `${OWNER_NUMBER}@c.us`; // Construido automáticamente
 
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
@@ -331,7 +331,7 @@ function getUserState(userId) {
   return userStates.get(userId);
 }
 
-// ========== SLOTS ==========
+// ========== SLOTS (NUEVO: ANTI DOBLE-BOOKING) ==========
 function calcularSlotsUsados(horaInicio, duracionMin) { 
   const base = 20; 
   const blocks = Math.ceil(duracionMin / base); 
@@ -347,6 +347,61 @@ function calcularSlotsUsados(horaInicio, duracionMin) {
   return out; 
 }
 
+// NUEVO: Verificar disponibilidad de slots
+async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
+  const reservas = await readReservas();
+  const slotsReservados = reservas[fecha] || [];
+  const slotsNecesarios = calcularSlotsUsados(horaInicio, duracionMin);
+  
+  // Verificar colisión
+  for (const slot of slotsNecesarios) {
+    if (slotsReservados.includes(slot)) {
+      return { disponible: false, slots: slotsNecesarios, colision: slot };
+    }
+  }
+  
+  return { disponible: true, slots: slotsNecesarios };
+}
+
+// NUEVO: Sugerir horarios alternativos
+async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
+  const reservas = await readReservas();
+  const slotsReservados = reservas[fecha] || [];
+  
+  const horario = BARBERIA_CONFIG?.horario || {};
+  const hoy = DateTime.fromISO(fecha).setLocale('es').toFormat('EEEE').toLowerCase();
+  
+  let horarioStr = '';
+  if (hoy.startsWith('sá')) horarioStr = horario.sab || '9:00-18:00';
+  else if (hoy.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
+  else horarioStr = horario.lun_vie || '9:00-18:00';
+  
+  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado') return [];
+  
+  const [inicio, fin] = horarioStr.split('-').map(s => s.trim());
+  const [hInicio, mInicio] = inicio.split(':').map(Number);
+  const [hFin, mFin] = fin.split(':').map(Number);
+  
+  const minutoInicio = hInicio * 60 + mInicio;
+  const minutoFin = hFin * 60 + mFin;
+  
+  const alternativas = [];
+  
+  for (let m = minutoInicio; m < minutoFin - duracionMin; m += 20) {
+    const hh = Math.floor(m / 60);
+    const mm = m % 60;
+    const horaStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    
+    const check = await verificarDisponibilidad(fecha, horaStr, duracionMin);
+    if (check.disponible) {
+      alternativas.push(horaStr);
+      if (alternativas.length >= limite) break;
+    }
+  }
+  
+  return alternativas;
+}
+
 // ========== TAGS ==========
 async function procesarTags(mensaje, chatId) {
   const bookingMatch = mensaje.match(/<BOOKING:\s*({[^>]+})>/);
@@ -355,6 +410,35 @@ async function procesarTags(mensaje, chatId) {
   if (bookingMatch) {
     try {
       const bookingData = JSON.parse(bookingMatch[1]);
+      
+      // NUEVO: Verificar disponibilidad antes de guardar
+      const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
+      const check = await verificarDisponibilidad(
+        bookingData.fecha, 
+        bookingData.hora_inicio, 
+        duracionMin
+      );
+      
+      if (!check.disponible) {
+        // Horario no disponible - sugerir alternativas
+        const alternativas = await sugerirHorariosAlternativos(bookingData.fecha, duracionMin);
+        
+        let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
+        
+        if (alternativas.length > 0) {
+          respuesta += '\n\n🕒 *Horarios disponibles:*\n';
+          alternativas.forEach((h, i) => {
+            respuesta += `${i + 1}. ${formatearHora(h)}\n`;
+          });
+          respuesta += '\n¿Cuál te queda mejor?';
+        } else {
+          respuesta += '\n\nNo hay horarios disponibles para ese día. ¿Prefieres otro día?';
+        }
+        
+        return respuesta;
+      }
+      
+      // Disponible - guardar booking
       bookingData.id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       bookingData.chatId = chatId;
       bookingData.createdAt = new Date().toISOString();
@@ -364,12 +448,16 @@ async function procesarTags(mensaje, chatId) {
       bookings.push(bookingData);
       await writeBookings(bookings);
 
+      // NUEVO: Guardar todos los slots ocupados
       const reservas = await readReservas();
       reservas[bookingData.fecha] = reservas[bookingData.fecha] || [];
-      const horaF = formatearHora(bookingData.hora_inicio);
-      if (!reservas[bookingData.fecha].includes(horaF)) {
-        reservas[bookingData.fecha].push(horaF);
+      
+      for (const slot of check.slots) {
+        if (!reservas[bookingData.fecha].includes(slot)) {
+          reservas[bookingData.fecha].push(slot);
+        }
       }
+      
       await writeReservas(reservas);
 
       await programarConfirmacion(bookingData);
@@ -378,7 +466,7 @@ async function procesarTags(mensaje, chatId) {
       await programarExtranamos(bookingData);
       
       await notificarDueno(
-        `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${horaF}`
+        `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`
       );
       
       console.log('✅ Booking guardado:', bookingData.id);
@@ -398,11 +486,14 @@ async function procesarTags(mensaje, chatId) {
         b.status = 'cancelled';
         await writeBookings(bookings);
         
+        // NUEVO: Liberar todos los slots
         const reservas = await readReservas();
-        if (reservas[b.fecha]) { 
-          const horaF = formatearHora(b.hora_inicio); 
-          reservas[b.fecha] = reservas[b.fecha].filter(h => h !== horaF); 
-          await writeReservas(reservas); 
+        if (reservas[b.fecha]) {
+          const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
+          const slotsOcupados = calcularSlotsUsados(b.hora_inicio, duracionMin);
+          
+          reservas[b.fecha] = reservas[b.fecha].filter(slot => !slotsOcupados.includes(slot));
+          await writeReservas(reservas);
         }
         
         await notificarDueno(
@@ -670,9 +761,177 @@ async function programarMensajePersonalizado(args, fromChatId) {
   }
 }
 
+// ========== NUEVOS COMANDOS DE CONFIGURACIÓN (SOLO DUEÑO) ==========
+function deepMerge(target, source) {
+  for (const key in source) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      target[key] = target[key] || {};
+      deepMerge(target[key], source[key]);
+    } else {
+      target[key] = source[key];
+    }
+  }
+  return target;
+}
+
+async function guardarConfigBarberia() {
+  try {
+    const contenido = JSON.stringify(BARBERIA_CONFIG, null, 2);
+    await fs.writeFile(BARBERIA_BASE_PATH, contenido, 'utf8');
+    console.log('✅ Configuración guardada en barberia_base.txt');
+    return true;
+  } catch (e) {
+    console.error('❌ Error guardando configuración:', e.message);
+    return false;
+  }
+}
+
+async function comandoConfigReload(fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño puede usar este comando.';
+  }
+  
+  await cargarConfigBarberia();
+  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🏪 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
+}
+
+async function comandoConfigSet(args, fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño puede usar este comando.';
+  }
+  
+  try {
+    const jsonMatch = args.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return '❌ No se encontró JSON válido.\n\nUso: `/config set "{\\"negocio\\":{\\"nombre\\":\\"Mi Barber\\"}}"}`';
+    }
+    
+    const updates = JSON.parse(jsonMatch[0]);
+    deepMerge(BARBERIA_CONFIG, updates);
+    
+    const guardado = await guardarConfigBarberia();
+    
+    if (guardado) {
+      return `✅ *Configuración actualizada*\n\n${JSON.stringify(updates, null, 2)}\n\n💾 Cambios guardados en disco.`;
+    } else {
+      return '⚠️ Configuración actualizada en memoria pero NO se pudo guardar en disco.';
+    }
+  } catch (e) {
+    return `❌ Error parseando JSON:\n${e.message}`;
+  }
+}
+
+async function comandoConfigAddServicio(args, fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño puede usar este comando.';
+  }
+  
+  const match = args.match(/"([^"]+)"\s+(\d+)\s+(\d+)\s+"([^"]+)"/);
+  if (!match) {
+    return '❌ Formato incorrecto.\n\nUso: `/config add servicio "Nombre" precio minutos "emoji"`\nEjemplo: `/config add servicio "Keratina" 120000 90 "✨"`';
+  }
+  
+  const [, nombre, precio, min, emoji] = match;
+  
+  BARBERIA_CONFIG.servicios = BARBERIA_CONFIG.servicios || {};
+  BARBERIA_CONFIG.servicios[nombre] = {
+    precio: parseInt(precio),
+    min: parseInt(min),
+    emoji: emoji
+  };
+  
+  const guardado = await guardarConfigBarberia();
+  
+  if (guardado) {
+    return `✅ *Servicio añadido*\n\n${emoji} ${nombre}\n💰 $${parseInt(precio).toLocaleString('es-CO')}\n⏱️ ${min} min\n\n💾 Guardado en disco.`;
+  } else {
+    return '⚠️ Servicio añadido en memoria pero NO se pudo guardar en disco.';
+  }
+}
+
+async function comandoConfigEditServicio(args, fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño puede usar este comando.';
+  }
+  
+  const matchNombre = args.match(/"([^"]+)"/);
+  if (!matchNombre) {
+    return '❌ Debes especificar el nombre del servicio entre comillas.\n\nUso: `/config edit servicio "Nombre" precio=NN min=MM emoji="X"`';
+  }
+  
+  const nombre = matchNombre[1];
+  
+  if (!BARBERIA_CONFIG.servicios?.[nombre]) {
+    return `❌ El servicio "${nombre}" no existe.`;
+  }
+  
+  const precioMatch = args.match(/precio=(\d+)/);
+  const minMatch = args.match(/min=(\d+)/);
+  const emojiMatch = args.match(/emoji="([^"]+)"/);
+  
+  if (precioMatch) BARBERIA_CONFIG.servicios[nombre].precio = parseInt(precioMatch[1]);
+  if (minMatch) BARBERIA_CONFIG.servicios[nombre].min = parseInt(minMatch[1]);
+  if (emojiMatch) BARBERIA_CONFIG.servicios[nombre].emoji = emojiMatch[1];
+  
+  const guardado = await guardarConfigBarberia();
+  
+  const s = BARBERIA_CONFIG.servicios[nombre];
+  if (guardado) {
+    return `✅ *Servicio actualizado*\n\n${s.emoji} ${nombre}\n💰 $${s.precio.toLocaleString('es-CO')}\n⏱️ ${s.min} min\n\n💾 Guardado en disco.`;
+  } else {
+    return '⚠️ Servicio actualizado en memoria pero NO se pudo guardar en disco.';
+  }
+}
+
+async function comandoConfigDelServicio(args, fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño puede usar este comando.';
+  }
+  
+  const match = args.match(/"([^"]+)"/);
+  if (!match) {
+    return '❌ Debes especificar el nombre del servicio entre comillas.\n\nUso: `/config del servicio "Nombre"`';
+  }
+  
+  const nombre = match[1];
+  
+  if (!BARBERIA_CONFIG.servicios?.[nombre]) {
+    return `❌ El servicio "${nombre}" no existe.`;
+  }
+  
+  delete BARBERIA_CONFIG.servicios[nombre];
+  
+  const guardado = await guardarConfigBarberia();
+  
+  if (guardado) {
+    return `✅ *Servicio eliminado*\n\n"${nombre}" ha sido eliminado.\n\n💾 Guardado en disco.`;
+  } else {
+    return '⚠️ Servicio eliminado en memoria pero NO se pudo guardar en disco.';
+  }
+}
+
+async function comandoSetOwner(args, fromChatId) {
+  if (fromChatId !== OWNER_CHAT_ID) {
+    return '❌ Solo el dueño actual puede cambiar el owner.';
+  }
+  
+  const match = args.match(/"?(\d{10,15})"?/);
+  if (!match) {
+    return '❌ Formato incorrecto.\n\nUso: `/set owner "573223698554"`\n\n⚠️ Este cambio es temporal. Para que persista, actualiza OWNER_NUMBER en tu .env';
+  }
+  
+  const nuevoOwner = match[1];
+  OWNER_NUMBER = nuevoOwner;
+  OWNER_CHAT_ID = `${nuevoOwner}@c.us`;
+  
+  return `✅ *Owner cambiado temporalmente*\n\n📱 Nuevo owner: ${nuevoOwner}\n\n⚠️ *Importante:* Este cambio solo dura hasta que reinicies el bot.\n\nPara hacerlo permanente, actualiza tu archivo .env:\n\`\`\`\nOWNER_NUMBER=${nuevoOwner}\n\`\`\``;
+}
+
 // ========== COMANDO /ayuda ==========
-function mostrarAyuda() {
-  return `🤖 *COMANDOS DISPONIBLES*
+function mostrarAyuda(fromChatId) {
+  const esDueno = fromChatId === OWNER_CHAT_ID;
+  
+  let ayuda = `🤖 *COMANDOS DISPONIBLES*
 
 📋 *Generales:*
 • /ayuda - Muestra este mensaje
@@ -688,9 +947,25 @@ function mostrarAyuda() {
 
 ⏰ *Programación:*
 • /send later "número" "fecha hora" "mensaje"
-  Ejemplo: /send later "573001234567" "2025-10-25 14:30" "Hola!"
+  Ejemplo: /send later "573001234567" "2025-10-25 14:30" "Hola!"`;
+
+  if (esDueno) {
+    ayuda += `
+
+🔧 *Configuración (Solo dueño):*
+• /config reload - Recargar configuración desde archivo
+• /config set "<json>" - Actualizar configuración
+• /config add servicio "Nombre" precio minutos "emoji"
+• /config edit servicio "Nombre" [precio=NN] [min=MM] [emoji="X"]
+• /config del servicio "Nombre"
+• /set owner "número" - Cambiar dueño (temporal)`;
+  }
+
+  ayuda += `
 
 💡 *Nota:* Los comandos solo funcionan en modo texto.`;
+
+  return ayuda;
 }
 
 // ========== TRANSCRIPCIÓN DE AUDIO (Whisper) ==========
@@ -730,7 +1005,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   
   // Comando /ayuda
   if (msgLower.includes('/ayuda') || msgLower.includes('/help')) {
-    return mostrarAyuda();
+    return mostrarAyuda(chatId);
   }
   
   // Comando /bot off
@@ -754,6 +1029,36 @@ async function chatWithAI(userMessage, userId, chatId) {
   if (msgLower.startsWith('/send later')) { 
     const args = userMessage.replace(/\/send later/i, '').trim(); 
     return await programarMensajePersonalizado(args, chatId); 
+  }
+  
+  // NUEVOS COMANDOS DE CONFIGURACIÓN
+  if (msgLower.startsWith('/config reload')) {
+    return await comandoConfigReload(chatId);
+  }
+  
+  if (msgLower.startsWith('/config set')) {
+    const args = userMessage.replace(/\/config set/i, '').trim();
+    return await comandoConfigSet(args, chatId);
+  }
+  
+  if (msgLower.startsWith('/config add servicio')) {
+    const args = userMessage.replace(/\/config add servicio/i, '').trim();
+    return await comandoConfigAddServicio(args, chatId);
+  }
+  
+  if (msgLower.startsWith('/config edit servicio')) {
+    const args = userMessage.replace(/\/config edit servicio/i, '').trim();
+    return await comandoConfigEditServicio(args, chatId);
+  }
+  
+  if (msgLower.startsWith('/config del servicio')) {
+    const args = userMessage.replace(/\/config del servicio/i, '').trim();
+    return await comandoConfigDelServicio(args, chatId);
+  }
+  
+  if (msgLower.startsWith('/set owner')) {
+    const args = userMessage.replace(/\/set owner/i, '').trim();
+    return await comandoSetOwner(args, chatId);
   }
 
   // Si el bot está desactivado, no responder
@@ -968,7 +1273,9 @@ client.on('message', async (message) => {
       '/start test', 
       '/end test', 
       '/ayuda', 
-      '/help'
+      '/help',
+      '/config',
+      '/set owner'
     ];
     const esComandoEspecial = comandosEspeciales.some(cmd => 
       (processedMessage || userMessage).toLowerCase().includes(cmd)
