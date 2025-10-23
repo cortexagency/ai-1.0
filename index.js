@@ -1163,9 +1163,13 @@ async function chatWithAI(userMessage, userId, chatId) {
     
     const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
     
-    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}.` + 
+    // Obtener hora actual en formato legible
+    const horaActual = hoy.toFormat('h:mm a');
+    
+    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. Objetivo: agendar y responder FAQs. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.` + 
       `\nReglas para agendar: 1.Pregunta servicio 2.Da precio/duración 3.Pide día/hora 4.Si confirman hora, EXTRAE EL NOMBRE del mensaje anterior si ya lo dijeron (ej: "para Samuel", "a nombre de Juan") - SI YA TE DIERON EL NOMBRE NO LO VUELVAS A PREGUNTAR 5.Si no te han dado nombre, pide nombre completo 6.Confirma y emite <BOOKING:{...}>.` + 
       `\nIMPORTANTE: Si el cliente dice "para [nombre]" o "a nombre de [nombre]", ese es el nombre del cliente. NO vuelvas a preguntarlo.` +
+      `\n⏰ CRÍTICO: Son las ${horaActual}. NO ofrezcas horarios que ya pasaron (antes de ${horaActual}). Solo ofrece horarios FUTUROS.` +
       `\nHorario hoy: ${horarioHoy}. Servicios:\n${serviciosTxt}\nDirección: ${direccion}\nPagos: ${pagosTxt}\nFAQs:\n${faqsTxt}\nUpsell: ${upsell}`;
     
     // Generar lista de horas ocupadas en formato legible
@@ -1176,8 +1180,8 @@ async function chatWithAI(userMessage, userId, chatId) {
     }
     
     systemPrompt = (plantilla || fallback + horasOcupadasTxt)
-    systemPrompt = (plantilla || fallback + horasOcupadasTxt)
       .replace(/{hoy}/g, fechaISO)
+      .replace(/{horaActual}/g, horaActual)
       .replace(/{diaSemana}/g, diaSemanaTxt)
       .replace(/{nombreBarberia}/g, nombreBarberia)
       .replace(/{direccionBarberia}/g, direccion)
