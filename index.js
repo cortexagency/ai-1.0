@@ -743,6 +743,179 @@ async function notificarDueno(txt, fromChatId = null) {
   }
 }
 
+// ========== DETECCIÓN AUTOMÁTICA DE CITAS (POST-OPENAI) ==========
+async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, chatId) {
+  try {
+    // Solo intentar si la respuesta de OpenAI sugiere confirmación de cita
+    const respLower = lastResponse.toLowerCase();
+    const esConfirmacion = respLower.includes('agend') || respLower.includes('confirm') || 
+                          respLower.includes('reserv') || respLower.includes('listo') ||
+                          respLower.includes('perfect');
+    
+    if (!esConfirmacion) return;
+    
+    console.log('[🔍 AUTO-CITA] Analizando conversación para extraer datos...');
+    
+    // Analizar últimos 10 mensajes
+    const ultimos = conversationHistory.slice(-10);
+    
+    let servicio = null;
+    let fecha = null;
+    let hora = null;
+    let nombre = null;
+    
+    const serviciosValidos = Object.keys(BARBERIA_CONFIG?.servicios || {});
+    const ahora = now();
+    
+    for (const msg of ultimos) {
+      const texto = (msg.content || '').toLowerCase();
+      
+      // Buscar servicio
+      if (!servicio) {
+        for (const srv of serviciosValidos) {
+          if (texto.includes(srv.toLowerCase()) || 
+              texto.includes(srv.toLowerCase().replace(' ', ''))) {
+            servicio = srv;
+            console.log('[🔍 AUTO-CITA] Servicio encontrado:', servicio);
+            break;
+          }
+        }
+      }
+      
+      // Buscar hora (formato flexible: 9am, 9:00, 15:00, etc)
+      if (!hora) {
+        const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
+        if (horaMatch) {
+          let h = parseInt(horaMatch[1]);
+          const m = horaMatch[2] || '00';
+          const ampm = horaMatch[3]?.toLowerCase();
+          
+          // Convertir a 24h
+          if (ampm === 'pm' && h < 12) h += 12;
+          if (ampm === 'am' && h === 12) h = 0;
+          
+          // Validar horario (9 AM a 8 PM)
+          if (h >= 9 && h < 20) {
+            hora = `${String(h).padStart(2, '0')}:${m}`;
+            console.log('[🔍 AUTO-CITA] Hora encontrada:', hora);
+          }
+        }
+      }
+      
+      // Buscar fecha (palabras clave)
+      if (!fecha) {
+        if (texto.includes('mañana') || texto.includes('tomorrow')) {
+          fecha = ahora.plus({ days: 1 }).toFormat('yyyy-MM-dd');
+          console.log('[🔍 AUTO-CITA] Fecha: mañana ->', fecha);
+        } else if (texto.includes('hoy') || texto.includes('today')) {
+          fecha = ahora.toFormat('yyyy-MM-dd');
+          console.log('[🔍 AUTO-CITA] Fecha: hoy ->', fecha);
+        } else if (texto.includes('pasado mañana')) {
+          fecha = ahora.plus({ days: 2 }).toFormat('yyyy-MM-dd');
+          console.log('[🔍 AUTO-CITA] Fecha: pasado mañana ->', fecha);
+        }
+      }
+      
+      // Buscar nombre (solo en mensajes del usuario)
+      if (!nombre && msg.role === 'user') {
+        // Intentar extraer nombre después de palabras clave
+        const nombreMatch = texto.match(/(?:soy|nombre|llamo|me llamo)\s+([a-záéíóúñ\s]{2,30})/i);
+        if (nombreMatch) {
+          nombre = nombreMatch[1].trim();
+          // Capitalizar primera letra
+          nombre = nombre.split(' ').map(p => 
+            p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+          ).join(' ');
+          console.log('[🔍 AUTO-CITA] Nombre encontrado:', nombre);
+        } else {
+          // Buscar palabras capitalizadas
+          const palabras = msg.content.split(/\s+/);
+          for (const palabra of palabras) {
+            if (/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}$/.test(palabra) && 
+                palabra.length > 2 && 
+                !['Para', 'Quiero', 'Hola', 'Buenos', 'Días'].includes(palabra)) {
+              nombre = palabra;
+              console.log('[🔍 AUTO-CITA] Nombre por capitalización:', nombre);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // Verificar si tenemos todos los datos
+    if (!servicio || !fecha || !hora || !nombre) {
+      console.log('[🔍 AUTO-CITA] Datos incompletos:', { servicio, fecha, hora, nombre });
+      return;
+    }
+    
+    // Verificar si ya existe una cita similar (evitar duplicados)
+    const bookings = await readBookings();
+    const citaExistente = bookings.find(b => 
+      b.chatId === chatId && 
+      b.fecha === fecha && 
+      b.hora_inicio === hora &&
+      b.status !== 'cancelled'
+    );
+    
+    if (citaExistente) {
+      console.log('[🔍 AUTO-CITA] Ya existe cita similar, no duplicar');
+      return;
+    }
+    
+    console.log('[🔥 AUTO-CITA] ¡Todos los datos completos! Creando cita...');
+    
+    // Verificar disponibilidad
+    const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
+    const disponible = await verificarDisponibilidad(fecha, hora, duracionMin);
+    
+    if (!disponible) {
+      console.log('[❌ AUTO-CITA] Horario no disponible');
+      return;
+    }
+    
+    // Crear la cita
+    const bookingData = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      chatId,
+      nombreCliente: nombre,
+      servicio,
+      fecha,
+      hora_inicio: hora,
+      createdAt: new Date().toISOString(),
+      status: 'confirmed'
+    };
+    
+    bookings.push(bookingData);
+    await writeBookings(bookings);
+    
+    // Reservar slots
+    const reservas = await readReservas();
+    const slotsOcupados = calcularSlotsUsados(hora, duracionMin);
+    if (!reservas[fecha]) reservas[fecha] = [];
+    reservas[fecha].push(...slotsOcupados);
+    await writeReservas(reservas);
+    
+    // Programar mensajes
+    await programarConfirmacion(bookingData);
+    await programarRecordatorio(bookingData);
+    await programarResena(bookingData);
+    await programarExtranamos(bookingData);
+    
+    // 🔥 NOTIFICAR AL DUEÑO
+    console.log('[🔥 AUTO-CITA] Notificando al dueño...');
+    await notificarDueno(
+      `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n🔧 ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
+      chatId
+    );
+    
+    console.log('[✅ AUTO-CITA] Cita creada exitosamente:', bookingData.id);
+    
+  } catch (e) {
+    console.error('[❌ AUTO-CITA] Error:', e.message);
+  }
+}
+
 // ========== CANCELACIÓN DIRECTA (SIN DEPENDER DE OPENAI) ==========
 async function manejarCancelacionDirecta(userMessage, chatId) {
   const msgLower = userMessage.toLowerCase().trim();
@@ -1624,6 +1797,9 @@ ${faqsTxt}
     
     if (state.mode === 'demo') {
       respuesta = await procesarTags(respuesta, chatId);
+      
+      // 🔥 NUEVO: Detectar y crear cita automáticamente si OpenAI no generó el tag
+      await detectarYCrearCitaAutomatica(state.conversationHistory, respuesta, chatId);
     }
     
     const frasesNoSabe = [
