@@ -746,8 +746,88 @@ async function notificarDueno(txt, fromChatId = null) {
 // ========== CANCELACIÓN DIRECTA (SIN DEPENDER DE OPENAI) ==========
 async function manejarCancelacionDirecta(userMessage, chatId) {
   const msgLower = userMessage.toLowerCase().trim();
+  const state = getUserState(chatId);
   
-  // Palabras clave de cancelación
+  // 🔥 CASO 1: Si está esperando confirmación de cancelación
+  if (state.esperandoConfirmacionCancelacion && state.citaParaCancelar) {
+    const confirma = msgLower === 'si' || msgLower === 'sí' || 
+                     msgLower === 'confirmo' || msgLower === 'dale' ||
+                     msgLower === 'ok' || msgLower === 'yes';
+    
+    console.log('[🔥 CANCELACIÓN DIRECTA] Esperando confirmación, usuario dice:', msgLower);
+    console.log('[🔥 CANCELACIÓN DIRECTA] Confirma:', confirma);
+    
+    if (confirma) {
+      const cita = state.citaParaCancelar;
+      
+      // Cancelar la cita
+      const bookings = await readBookings();
+      const citaIndex = bookings.findIndex(b => b.id === cita.id);
+      if (citaIndex !== -1) {
+        bookings[citaIndex].status = 'cancelled';
+        await writeBookings(bookings);
+        
+        console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada:', cita.id);
+        
+        // Liberar slots
+        const reservas = await readReservas();
+        if (reservas[cita.fecha]) {
+          const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
+          const slotsOcupados = calcularSlotsUsados(cita.hora_inicio, duracionMin);
+          reservas[cita.fecha] = reservas[cita.fecha].filter(slot => !slotsOcupados.includes(slot));
+          await writeReservas(reservas);
+          console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
+        }
+        
+        // Notificar al dueño
+        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
+        await notificarDueno(
+          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
+          chatId
+        );
+        
+        state.esperandoConfirmacionCancelacion = false;
+        state.citaParaCancelar = null;
+        console.log('[✅ CANCELACIÓN DIRECTA] Proceso completo');
+        
+        return `✅ Listo, tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} ha sido cancelada. Si necesitas reprogramar, avísame. 😊`;
+      }
+    } else {
+      state.esperandoConfirmacionCancelacion = false;
+      state.citaParaCancelar = null;
+      return "Ok, tu cita sigue activa. ¿En qué más puedo ayudarte?";
+    }
+  }
+  
+  // 🔥 CASO 2: Si tiene lista de citas y responde con número
+  if (state.citasParaCancelar && state.citasParaCancelar.length > 0) {
+    // Intentar extraer número del mensaje
+    const numeroMatch = userMessage.match(/\b(\d+)\b/);
+    
+    if (numeroMatch) {
+      const numero = parseInt(numeroMatch[1]);
+      console.log('[🔥 CANCELACIÓN DIRECTA] Usuario seleccionó número:', numero);
+      
+      if (numero >= 1 && numero <= state.citasParaCancelar.length) {
+        const cita = state.citasParaCancelar[numero - 1];
+        
+        // Preguntar confirmación
+        state.esperandoConfirmacionCancelacion = true;
+        state.citaParaCancelar = cita;
+        state.citasParaCancelar = null;
+        
+        console.log('[🔥 CANCELACIÓN DIRECTA] Preguntando confirmación para:', cita.id);
+        return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
+      } else {
+        return `Por favor responde con un número entre 1 y ${state.citasParaCancelar.length}.`;
+      }
+    }
+    
+    // Si no es número, limpiar estado y continuar
+    state.citasParaCancelar = null;
+  }
+  
+  // 🔥 CASO 3: Detectar palabras de cancelación
   const palabrasCancelacion = [
     'cancelar',
     'cancela',
@@ -767,69 +847,76 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   
   console.log('[🔥 CANCELACIÓN DIRECTA] Detectada palabra de cancelación');
   
-  // Es cancelación - buscar citas activas del usuario
+  // Buscar citas activas del usuario
   const bookings = await readBookings();
-  const citasActivas = bookings.filter(b => 
-    b.chatId === chatId && 
-    b.status !== 'cancelled'
-  );
+  const ahora = now();
+  
+  const citasActivas = bookings.filter(b => {
+    if (b.chatId !== chatId || b.status === 'cancelled') return false;
+    
+    // Filtrar citas pasadas
+    const [year, month, day] = b.fecha.split('-').map(Number);
+    const [hour, minute] = b.hora_inicio.split(':').map(Number);
+    const fechaHoraCita = DateTime.fromObject(
+      { year, month, day, hour, minute }, 
+      { zone: TIMEZONE }
+    );
+    
+    return fechaHoraCita > ahora;
+  });
   
   console.log('[🔥 CANCELACIÓN DIRECTA] Citas activas del usuario:', citasActivas.length);
   
   if (citasActivas.length === 0) {
-    return "No encontré ninguna cita activa para cancelar. ¿Necesitas ayuda con algo más?";
+    return "No encontré ninguna cita activa futura para cancelar. ¿Necesitas ayuda con algo más?";
   }
   
-  // Si tiene solo 1 cita, preguntar confirmación
+  // 🔥 CASO 4: Intentar detectar fecha/hora específica en el mensaje
+  // Ejemplo: "cancelar cita del 24" o "cancelar cita de mañana" o "cancelar la de 7:20 PM"
+  
+  // Buscar por hora (7:20, 19:20, etc)
+  const horaMatch = userMessage.match(/(\d{1,2}):?(\d{2})\s*(am|pm)?/i);
+  if (horaMatch) {
+    let hora = parseInt(horaMatch[1]);
+    const minuto = horaMatch[2];
+    const ampm = horaMatch[3]?.toLowerCase();
+    
+    // Convertir a 24h si es necesario
+    if (ampm === 'pm' && hora < 12) hora += 12;
+    if (ampm === 'am' && hora === 12) hora = 0;
+    
+    const horaStr = `${String(hora).padStart(2, '0')}:${minuto}`;
+    
+    const citaPorHora = citasActivas.find(c => c.hora_inicio === horaStr);
+    if (citaPorHora) {
+      console.log('[🔥 CANCELACIÓN DIRECTA] Encontrada cita por hora:', horaStr);
+      state.esperandoConfirmacionCancelacion = true;
+      state.citaParaCancelar = citaPorHora;
+      return `¿Me confirmas que deseas cancelar tu cita del ${citaPorHora.fecha} a las ${formatearHora(citaPorHora.hora_inicio)} para ${citaPorHora.servicio}?\n\nResponde "sí" para confirmar.`;
+    }
+  }
+  
+  // Buscar por fecha (2025-10-24, 24, etc)
+  const fechaMatch = userMessage.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2})/);
+  if (fechaMatch) {
+    const fechaBuscada = fechaMatch[1] || `${ahora.year}-${String(ahora.month).padStart(2, '0')}-${String(fechaMatch[2]).padStart(2, '0')}`;
+    
+    const citasPorFecha = citasActivas.filter(c => c.fecha === fechaBuscada);
+    if (citasPorFecha.length === 1) {
+      const cita = citasPorFecha[0];
+      console.log('[🔥 CANCELACIÓN DIRECTA] Encontrada cita por fecha:', fechaBuscada);
+      state.esperandoConfirmacionCancelacion = true;
+      state.citaParaCancelar = cita;
+      return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
+    }
+  }
+  
+  // Si tiene solo 1 cita, preguntar directamente
   if (citasActivas.length === 1) {
     const cita = citasActivas[0];
-    const state = getUserState(chatId);
-    
-    // Si ya preguntamos antes y ahora dice "sí", cancelar
-    if (state.esperandoConfirmacionCancelacion) {
-      const confirma = msgLower === 'si' || msgLower === 'sí' || 
-                       msgLower === 'confirmo' || msgLower === 'dale' ||
-                       msgLower === 'ok' || msgLower === 'yes';
-      
-      console.log('[🔥 CANCELACIÓN DIRECTA] Usuario confirma:', confirma);
-      
-      if (confirma) {
-        // CANCELAR LA CITA
-        cita.status = 'cancelled';
-        await writeBookings(bookings);
-        
-        console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada');
-        
-        // Liberar slots
-        const reservas = await readReservas();
-        if (reservas[cita.fecha]) {
-          const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
-          const slotsOcupados = calcularSlotsUsados(cita.hora_inicio, duracionMin);
-          reservas[cita.fecha] = reservas[cita.fecha].filter(slot => !slotsOcupados.includes(slot));
-          await writeReservas(reservas);
-          console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
-        }
-        
-        // 🔥 NOTIFICAR AL DUEÑO
-        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
-        await notificarDueno(
-          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
-          chatId
-        );
-        
-        state.esperandoConfirmacionCancelacion = false;
-        console.log('[✅ CANCELACIÓN DIRECTA] Proceso completo');
-        
-        return `✅ Listo, tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} ha sido cancelada. Si necesitas reprogramar, avísame. 😊`;
-      } else {
-        state.esperandoConfirmacionCancelacion = false;
-        return "Ok, tu cita sigue activa. ¿En qué más puedo ayudarte?";
-      }
-    }
-    
-    // Primera vez que pide cancelar - preguntar confirmación
     state.esperandoConfirmacionCancelacion = true;
-    console.log('[🔥 CANCELACIÓN DIRECTA] Preguntando confirmación');
+    state.citaParaCancelar = cita;
+    console.log('[🔥 CANCELACIÓN DIRECTA] Solo 1 cita, preguntando confirmación');
     return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
   }
   
@@ -838,9 +925,8 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   citasActivas.forEach((c, i) => {
     msg += `${i+1}. ${c.servicio} - ${c.fecha} a las ${formatearHora(c.hora_inicio)}\n`;
   });
-  msg += "\n¿Cuál deseas cancelar? (responde con el número)";
+  msg += "\n¿Cuál deseas cancelar? Responde con:\n- El número (ej: 1)\n- La fecha (ej: 24)\n- La hora (ej: 7:20 PM)";
   
-  const state = getUserState(chatId);
   state.citasParaCancelar = citasActivas;
   
   return msg;
