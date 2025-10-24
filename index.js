@@ -691,24 +691,55 @@ async function procesarTags(mensaje, chatId) {
   return mensaje;
 }
 
-// ========== NOTIFICAR AL DUEÑO ==========
+// ========== NOTIFICAR AL DUEÑO (VERSION CORREGIDA) ==========
 async function notificarDueno(txt, fromChatId = null) {
   try {
-    // 🔥 CORRECCIÓN 23-OCT 4:37 PM: Notificar al dueño SIEMPRE.
-    // El 'if' anterior bloqueaba notificaciones si el dueño mismo cancelaba,
-    // lo cual es confuso. Ahora siempre se notifica para confirmar la acción.
+    // 🔥 VALIDACIÓN CRÍTICA 1: Verificar que el cliente esté inicializado
+    if (!client || !client.info) {
+      console.error('[❌ NOTIFICACIÓN] Cliente de WhatsApp NO está listo todavía');
+      console.error('[❌ NOTIFICACIÓN] client existe:', !!client);
+      console.error('[❌ NOTIFICACIÓN] client.info existe:', !!client?.info);
+      return;
+    }
     
-    console.log(`[📤 NOTIFICACIÓN] Enviando al dueño: ${OWNER_CHAT_ID}`);
-    console.log(`[📤 NOTIFICACIÓN] Contenido: ${txt.substring(0, 100)}...`);
-    console.log(`[📤 NOTIFICACIÓN] fromChatId (quien originó): ${fromChatId}`);
+    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
+    if (fromChatId === OWNER_CHAT_ID) {
+      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
+      return;
+    }
     
-    await client.sendMessage(OWNER_CHAT_ID, txt); 
-    console.log('[✅ NOTIFICACIÓN] Enviada correctamente'); 
+    console.log(`[📤 NOTIFICACIÓN] ===================`);
+    console.log(`[📤 NOTIFICACIÓN] Enviando a: ${OWNER_CHAT_ID}`);
+    console.log(`[📤 NOTIFICACIÓN] Mensaje: ${txt.substring(0, 80)}...`);
+    console.log(`[📤 NOTIFICACIÓN] Origen: ${fromChatId || 'sistema'}`);
+    console.log(`[📤 NOTIFICACIÓN] Cliente listo: ${!!client?.info}`);
+    
+    // 🔥 ENVÍO CON TIMEOUT de 15 segundos
+    const sendPromise = client.sendMessage(OWNER_CHAT_ID, txt);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Timeout: no respuesta en 15s')), 15000)
+    );
+    
+    await Promise.race([sendPromise, timeoutPromise]);
+    
+    console.log('[✅ NOTIFICACIÓN] ¡Enviada exitosamente!'); 
+    console.log(`[✅ NOTIFICACIÓN] ===================`);
   }
   catch (e) { 
+    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] FALLÓ EL ENVÍO');
     console.error('[❌ NOTIFICACIÓN] Error:', e.message);
+    console.error('[❌ NOTIFICACIÓN] Tipo error:', e.constructor.name);
+    console.error('[❌ NOTIFICACIÓN] Stack completo:', e.stack);
     console.error('[❌ NOTIFICACIÓN] OWNER_CHAT_ID:', OWNER_CHAT_ID);
     console.error('[❌ NOTIFICACIÓN] fromChatId:', fromChatId);
+    console.error('[❌ NOTIFICACIÓN] Cliente estado:', {
+      existe: !!client,
+      info: !!client?.info,
+      pupBrowser: !!client?.pupBrowser,
+      authenticated: client?.info?.wid !== undefined
+    });
+    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
   }
 }
 
