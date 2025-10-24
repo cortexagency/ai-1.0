@@ -546,6 +546,13 @@ async function procesarTags(mensaje, chatId) {
   if (bookingMatch) {
     try {
       const bookingData = JSON.parse(bookingMatch[1]);
+    
+    // 🔥 VALIDAR HORA (9 AM - 8 PM)
+    const [h, m] = bookingData.hora_inicio.split(':').map(Number);
+    if (h < 9 || h >= 20) {
+      console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
+      return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
+    }
       
       const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
       const check = await verificarDisponibilidad(
@@ -1713,16 +1720,25 @@ async function chatWithAI(userMessage, userId, chatId) {
       citasUsuarioTxt += '\n*Si el cliente quiere cancelar, usa estos datos EXACTOS en el tag <CANCELLED:...>*\n';
     }
     
-    const fallback = `Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
+    const fallback = `🚨🚨🚨 IMPORTANTE 🚨🚨🚨
+HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
+Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy". Solo ofrece para "mañana" o días futuros.
+
+Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
 ${citasUsuarioTxt}
 
-**REGLAS PARA AGENDAR:**
+**🚨 REGLAS OBLIGATORIAS PARA AGENDAR:**
 1. Pregunta qué servicio necesita
 2. Da precio y duración del servicio
-3. Ofrece SOLO los horarios de la lista DISPONIBLE (abajo)
-4. Si confirman hora, EXTRAE EL NOMBRE si ya lo dijeron (ej: "para Samuel") - NO LO VUELVAS A PREGUNTAR
+3. Ofrece SOLO horarios FUTUROS (si son más de las 8 PM, NO ofrezcas para "hoy")
+4. Si confirman hora, EXTRAE EL NOMBRE si ya lo dijeron
 5. Si no te han dado nombre, pide nombre completo
-6. Confirma y emite: <BOOKING:{"nombreCliente":"(nombre)","servicio":"(servicio)","fecha":"${fechaISO}","hora_inicio":"(hh:mm formato 24h)"}>
+6. 🚨🚨🚨 CUANDO CONFIRMES LA CITA, DEBES EMITIR EL TAG EN LA MISMA RESPUESTA:
+   
+   Ejemplo CORRECTO:
+   "Listo, José! Te agendé corte mañana 24 de octubre a las 10:30 AM. <BOOKING:{\"nombreCliente\":\"José\",\"servicio\":\"corte clásico\",\"fecha\":\"2025-10-24\",\"hora_inicio\":\"10:30\"}>"
+   
+   🚨 SIN EL TAG, LA CITA NO SE GUARDA. ES OBLIGATORIO INCLUIRLO.
 
 **🚨 REGLAS CRÍTICAS PARA CANCELAR - DEBES SEGUIRLAS SIEMPRE:**
 1. Si el cliente pide cancelar, pregunta: "¿Me confirmas que quieres cancelar la cita de [fecha] a las [hora]?"
