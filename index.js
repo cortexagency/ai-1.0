@@ -743,6 +743,109 @@ async function notificarDueno(txt, fromChatId = null) {
   }
 }
 
+// ========== CANCELACIÓN DIRECTA (SIN DEPENDER DE OPENAI) ==========
+async function manejarCancelacionDirecta(userMessage, chatId) {
+  const msgLower = userMessage.toLowerCase().trim();
+  
+  // Palabras clave de cancelación
+  const palabrasCancelacion = [
+    'cancelar',
+    'cancela',
+    'cancelarla',
+    'cancelarlo',
+    'quitar la cita',
+    'anular',
+    'no puedo ir',
+    'no voy a poder'
+  ];
+  
+  const esCancelacion = palabrasCancelacion.some(p => msgLower.includes(p));
+  
+  if (!esCancelacion) {
+    return null; // No es cancelación, continuar normal
+  }
+  
+  console.log('[🔥 CANCELACIÓN DIRECTA] Detectada palabra de cancelación');
+  
+  // Es cancelación - buscar citas activas del usuario
+  const bookings = await readBookings();
+  const citasActivas = bookings.filter(b => 
+    b.chatId === chatId && 
+    b.status !== 'cancelled'
+  );
+  
+  console.log('[🔥 CANCELACIÓN DIRECTA] Citas activas del usuario:', citasActivas.length);
+  
+  if (citasActivas.length === 0) {
+    return "No encontré ninguna cita activa para cancelar. ¿Necesitas ayuda con algo más?";
+  }
+  
+  // Si tiene solo 1 cita, preguntar confirmación
+  if (citasActivas.length === 1) {
+    const cita = citasActivas[0];
+    const state = getUserState(chatId);
+    
+    // Si ya preguntamos antes y ahora dice "sí", cancelar
+    if (state.esperandoConfirmacionCancelacion) {
+      const confirma = msgLower === 'si' || msgLower === 'sí' || 
+                       msgLower === 'confirmo' || msgLower === 'dale' ||
+                       msgLower === 'ok' || msgLower === 'yes';
+      
+      console.log('[🔥 CANCELACIÓN DIRECTA] Usuario confirma:', confirma);
+      
+      if (confirma) {
+        // CANCELAR LA CITA
+        cita.status = 'cancelled';
+        await writeBookings(bookings);
+        
+        console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada');
+        
+        // Liberar slots
+        const reservas = await readReservas();
+        if (reservas[cita.fecha]) {
+          const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
+          const slotsOcupados = calcularSlotsUsados(cita.hora_inicio, duracionMin);
+          reservas[cita.fecha] = reservas[cita.fecha].filter(slot => !slotsOcupados.includes(slot));
+          await writeReservas(reservas);
+          console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
+        }
+        
+        // 🔥 NOTIFICAR AL DUEÑO
+        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
+        await notificarDueno(
+          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
+          chatId
+        );
+        
+        state.esperandoConfirmacionCancelacion = false;
+        console.log('[✅ CANCELACIÓN DIRECTA] Proceso completo');
+        
+        return `✅ Listo, tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} ha sido cancelada. Si necesitas reprogramar, avísame. 😊`;
+      } else {
+        state.esperandoConfirmacionCancelacion = false;
+        return "Ok, tu cita sigue activa. ¿En qué más puedo ayudarte?";
+      }
+    }
+    
+    // Primera vez que pide cancelar - preguntar confirmación
+    state.esperandoConfirmacionCancelacion = true;
+    console.log('[🔥 CANCELACIÓN DIRECTA] Preguntando confirmación');
+    return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
+  }
+  
+  // Si tiene múltiples citas, listarlas
+  let msg = "Tienes varias citas activas:\n\n";
+  citasActivas.forEach((c, i) => {
+    msg += `${i+1}. ${c.servicio} - ${c.fecha} a las ${formatearHora(c.hora_inicio)}\n`;
+  });
+  msg += "\n¿Cuál deseas cancelar? (responde con el número)";
+  
+  const state = getUserState(chatId);
+  state.citasParaCancelar = citasActivas;
+  
+  return msg;
+}
+
 // ========== PROGRAMACIONES ==========
 async function programarConfirmacion(booking) {
   try {
@@ -1544,6 +1647,15 @@ client.on('message', async (message) => {
     
     if (!state.botEnabled && !esComandoEspecial) {
       return;
+    }
+
+    // 🔥 NUEVO: Intentar manejar cancelación directamente (sin OpenAI)
+    const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
+    
+    if (respuestaCancelacion) {
+      // Se detectó y manejó una cancelación
+      await message.reply(respuestaCancelacion);
+      return; // No pasar a OpenAI
     }
 
     const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
