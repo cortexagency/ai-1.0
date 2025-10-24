@@ -545,6 +545,7 @@ async function procesarTags(mensaje, chatId) {
 
   if (bookingMatch) {
     try {
+    
       const bookingData = JSON.parse(bookingMatch[1]);
     
     // 🔥 VALIDAR HORA (9 AM - 8 PM)
@@ -874,9 +875,9 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     // Verificar disponibilidad
     const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
-    const disponible = await verificarDisponibilidad(fecha, hora, duracionMin);
-    
-    if (!disponible) {
+    // ======= CAMBIO APLICADO AQUÍ =======
+    const check = await verificarDisponibilidad(fecha, hora, duracionMin);
+    if (!check.disponible) {
       console.log('[❌ AUTO-CITA] Horario no disponible');
       return;
     }
