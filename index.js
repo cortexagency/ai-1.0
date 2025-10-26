@@ -710,10 +710,9 @@ async function notificarDueno(txt, fromChatId = null) {
       return;
     }
     
-    // 🔥 VALIDACIÓN 2: Evitar loops pero SÍ notificar cancelaciones
-    // NO bloquear notificaciones de cancelación incluso si el dueño las hace
-    if (fromChatId === OWNER_CHAT_ID && !txt.includes('cancelada')) {
-      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño (no cancelación) - no se auto-notifica');
+    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
+    if (fromChatId === OWNER_CHAT_ID) {
+      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
       return;
     }
     
@@ -1722,9 +1721,14 @@ async function chatWithAI(userMessage, userId, chatId) {
       citasUsuarioTxt += '\n*Si el cliente quiere cancelar, usa estos datos EXACTOS en el tag <CANCELLED:...>*\n';
     }
     
-    const fallback = `🚨🚨🚨 IMPORTANTE 🚨🚨🚨
-HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
-Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy". Solo ofrece para "mañana" o días futuros.
+    const fallback = `🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
+📅 HOY ES: ${diaSemanaTxt}, ${fechaISO}
+🕐 HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
+
+⚠️ REGLAS DE HORARIO:
+- Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy"
+- Solo ofrece horarios FUTUROS que no hayan pasado
+- Si un horario ya pasó HOY, NO lo ofrezcas
 
 Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
 ${citasUsuarioTxt}
@@ -1969,6 +1973,16 @@ client.on('auth_failure', (msg) => {
 
 // ========== START ==========
 console.log('🚀 Iniciando Cortex AI Bot...');
+// 🔥 DEBUG: Verificar timezone al iniciar
+const ahora = now();
+console.log('🕐 TIMEZONE DEBUG:', {
+  timezone: TIMEZONE,
+  fecha: ahora.toFormat('yyyy-MM-dd'),
+  hora: ahora.toFormat('HH:mm'),
+  diaSemana: ahora.toFormat('cccc'),
+  fechaCompleta: ahora.toString()
+});
+
 console.log(`📍 Timezone: ${TIMEZONE}`);
 console.log(`👤 Owner: ${OWNER_NUMBER}`);
 client.initialize();
