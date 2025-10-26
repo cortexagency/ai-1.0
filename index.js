@@ -710,9 +710,10 @@ async function notificarDueno(txt, fromChatId = null) {
       return;
     }
     
-    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
-    if (fromChatId === OWNER_CHAT_ID) {
-      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
+    // 🔥 VALIDACIÓN 2: Evitar loops pero SÍ notificar cancelaciones
+    // NO bloquear notificaciones de cancelación incluso si el dueño las hace
+    if (fromChatId === OWNER_CHAT_ID && !txt.includes('cancelada')) {
+      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño (no cancelación) - no se auto-notifica');
       return;
     }
     
