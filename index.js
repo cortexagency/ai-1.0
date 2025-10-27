@@ -349,6 +349,75 @@ function formatearHora(hhmm) {
   return `${h12}:${String(m).padStart(2, '0')} ${ampm}`; 
 }
 
+// ========== PARSER ROBUSTO PARA TAGS JSON ==========
+function _normalizeJsonLikeString(s) {
+  try {
+    let t = (s || "").trim();
+
+    // reemplazar comillas “ ” y ‘ ’
+    t = t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+
+    // si empieza con < y contiene '>', quita ángulos por si acaso
+    if (t.startsWith('<') && t.endsWith('>')) {
+      t = t.slice(1, -1);
+    }
+
+    // Asegura que las claves tengan comillas
+    t = t.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
+
+    // Valores con comilla simple → doble
+    t = t.replace(/:\s*'([^']*)'/g, ': "$1"');
+
+    // Claves con comilla simple → doble
+    t = t.replace(/'([A-Za-z0-9_]+)'\s*:/g, '"$1":');
+
+    // Quitar comas colgantes
+    t = t.replace(/,(\s*[}\]])/g, '$1');
+
+    return t;
+  } catch (_) { return s; }
+}
+
+function parseTagJsonLoose(str) {
+  const normalized = _normalizeJsonLikeString(str);
+  try {
+    return JSON.parse(normalized);
+  } catch (e) {
+    console.error('[TAG PARSER] JSON.parse fallo, intento de extracción de primer bloque JSON. Error:', e.message);
+    // intento de extraer el primer bloque {...}
+    const s = normalized.indexOf('{');
+    if (s === -1) throw e;
+    let depth = 0;
+    for (let i = s; i < normalized.length; i++) {
+      const ch = normalized[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = normalized.slice(s, i + 1);
+          return JSON.parse(candidate);
+        }
+      }
+    }
+    throw e;
+  }
+}
+
+// Convierte horas tipo '10am', '10:30 PM' a 'HH:MM' 24h
+function toHHMM24(hora) {
+  if (!hora) return hora;
+  const m = String(hora).trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!m) return hora;
+  let h = parseInt(m[1], 10);
+  const mm = m[2] || '00';
+  const ampm = (m[3] || '').toLowerCase();
+  if (ampm === 'pm' && h < 12) h += 12;
+  if (ampm === 'am' && h === 12) h = 0;
+  if (h < 0 || h > 23) return `${String(h).padStart(2,'0')}:${mm}`;
+  return `${String(h).padStart(2,'0')}:${mm}`;
+}
+
+
 // ========== ARCHIVOS DE ESTADO ==========
 async function readBookings() { return readJson(BOOKINGS_FILE, []); }
 async function writeBookings(d) { return writeJson(BOOKINGS_FILE, d); }
@@ -570,7 +639,9 @@ async function procesarTags(mensaje, chatId) {
   if (bookingMatch) {
     try {
     
-      const bookingData = JSON.parse(bookingMatch[1]);
+      const bookingData = parseTagJsonLoose(bookingMatch[1]);
+      // normalizar hora a HH:MM 24h
+      bookingData.hora_inicio = toHHMM24(bookingData.hora_inicio);
     
     // 🔥 VALIDAR HORA (9 AM - 8 PM)
     const [h, m] = bookingData.hora_inicio.split(':').map(Number);
@@ -649,7 +720,8 @@ async function procesarTags(mensaje, chatId) {
 
   if (cancelMatch) {
     try {
-      const cancelData = JSON.parse(cancelMatch[1]);
+      const cancelData = parseTagJsonLoose(cancelMatch[1]);
+      if (cancelData.hora_inicio) cancelData.hora_inicio = toHHMM24(cancelData.hora_inicio);
       console.log('[🔥 CANCELACIÓN] Datos recibidos:', JSON.stringify(cancelData, null, 2));
       
       const bookings = await readBookings();
@@ -692,6 +764,18 @@ async function procesarTags(mensaje, chatId) {
         console.log('[✅ CANCELACIÓN] Cita encontrada:', b.id);
         b.status = 'cancelled';
         await writeBookings(bookings);
+        // Cancelar mensajes programados de esta cita
+        try {
+          const scheduled = await readScheduledMessages();
+          const remain = scheduled.filter(x => x.bookingId !== b.id);
+          if (remain.length !== scheduled.length) {
+            await writeScheduledMessages(remain);
+            console.log('[🧹 CANCELACIÓN] Mensajes programados eliminados para', b.id);
+          }
+        } catch (e) {
+          console.error('[⚠️ CANCELACIÓN] No se pudo limpiar mensajes programados:', e.message);
+        }
+    
         
         // Liberar slots
         const reservas = await readReservas();
@@ -874,6 +958,78 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
     }
+      // Si tenemos datos suficientes, crear la cita automáticamente (fallback cuando el LLM no emitió el tag)
+      if (fecha && hora && (servicio || true) && nombre) {
+        // Resolver servicio por aproximación si falta
+        let servicioResolved = servicio;
+        if (!servicioResolved) {
+          const textoTodo = ultimos.map(m => (m.content||'').toLowerCase()).join(' | ');
+          const catalogo = Object.keys(BARBERIA_CONFIG?.servicios || {});
+          for (const s of catalogo) {
+            const sLow = s.toLowerCase();
+            if (textoTodo.includes(sLow) || textoTodo.includes(sLow.replace(/\s+/g,''))) {
+              servicioResolved = s;
+              break;
+            }
+          }
+          // heurística básica
+          if (!servicioResolved) {
+            if (textoTodo.includes('corte')) servicioResolved = catalogo.find(s=>s.toLowerCase().includes('corte')) || catalogo[0];
+            else if (textoTodo.includes('barba')) servicioResolved = catalogo.find(s=>s.toLowerCase().includes('barba')) || catalogo[0];
+          }
+        }
+
+        if (servicioResolved) {
+          const duracionMin = BARBERIA_CONFIG?.servicios?.[servicioResolved]?.min || 40;
+          const check = await verificarDisponibilidad(fecha, hora, duracionMin);
+          if (check.disponible) {
+            const bookingData = {
+              id: `${Date.now()}_${Math.random().toString(36).slice(2,9)}`,
+              chatId,
+              createdAt: new Date().toISOString(),
+              status: 'confirmed',
+              nombreCliente: nombre.replace(/^de\s+/i,'').trim(),
+              servicio: servicioResolved,
+              fecha,
+              hora_inicio: hora
+            };
+
+            const bookings = await readBookings();
+            if (!Array.isArray(bookings)) {
+              await writeBookings([bookingData]);
+            } else {
+              bookings.push(bookingData);
+              await writeBookings(bookings);
+            }
+
+            const reservas = await readReservas();
+            reservas[fecha] = reservas[fecha] || [];
+            for (const slot of check.slots) {
+              if (!reservas[fecha].includes(slot)) reservas[fecha].push(slot);
+            }
+            await writeReservas(reservas);
+
+            await programarConfirmacion(bookingData);
+            await programarRecordatorio(bookingData);
+            await programarResena(bookingData);
+            await programarExtranamos(bookingData);
+
+            await notificarDueno(
+              `📅 *Nueva cita (auto)*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+              chatId
+            );
+
+            console.log('[✅ AUTO-CITA] Creada fallback sin tag:', bookingData.id);
+          } else {
+            console.log('[ℹ️ AUTO-CITA] No se creó (sin disponibilidad).');
+          }
+        } else {
+          console.log('[ℹ️ AUTO-CITA] No se creó (servicio no identificado).');
+        }
+      } else {
+        console.log('[ℹ️ AUTO-CITA] Datos aún incompletos, no se crea automáticamente.');
+      }
+
     
     // Verificar si tenemos todos los datos
     if (!servicio || !fecha || !hora || !nombre) {
