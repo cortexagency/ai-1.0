@@ -1,12 +1,59 @@
-# Archivos de Node
+#######################################
+# NODE
+#######################################
 node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+*.log
+logs/
+.DS_Store
+Thumbs.db
 
-# Archivos de Sesión de WhatsApp
-.wwebjs_auth/
-.wwebjs_cache/
-
-# Archivos de entorno (Contiene tus llaves secretas)
+#######################################
+# ENVIROMENT VARIABLES
+#######################################
 .env
+.env.local
+.env.*.local
 
-# Archivo de base de datos de la demo
-data/demo_reservas.json
+#######################################
+# WHATSAPP SESSION (wweb.js)
+#######################################
+data/session/
+data/.wwebjs_auth/
+data/.wwebjs_cache/
+data/session/session/
+session/
+.session/
+
+#######################################
+# LEVELDB Session Storage
+#######################################
+**/IndexedDB/
+**/Local Storage/
+**/Session Storage/
+**/Service Worker/
+**/*.leveldb/
+
+#######################################
+# CHROME / PLAYWRIGHT / PUPPETEER
+#######################################
+**/DevToolsActivePort
+**/chrome_debug.log
+**/Default/
+
+#######################################
+# RUNTIME FILES
+#######################################
+tmp/
+temp/
+.cache/
+.cache/
+
+#######################################
+# SYSTEM FILES
+#######################################
+*.swp
+*.swo
+Thumbs.db
