@@ -571,7 +571,7 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
     minutoBusqueda = Math.max(minutoInicio, proximoSlot);
     
     console.log(`[Slots Hoy] Hora actual: ${ahora.toFormat('HH:mm')} (${minAhora-1} min). Próximo slot: ${proximoSlot} min.`);
-section  }
+ }
   
   const alternativas = [];
   
@@ -1028,7 +1028,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
           const slotsOcupados = calcularSlotsUsados(cita.hora_inicio, duracionMin);
           reservas[cita.fecha] = reservas[cita.fecha].filter(slot => !slotsOcupados.includes(slot));
-          await writeReservas(reservas);
+          await writeReservas(reservas);
           console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
         }
         
@@ -1120,7 +1120,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   }
   
   const horaMatch = userMessage.match(/(\d{1,2}):?(\d{2})\s*(am|pm)?/i);
-section  if (horaMatch) {
+  if (horaMatch) {
     let hora = parseInt(horaMatch[1]);
     const minuto = horaMatch[2];
     const ampm = horaMatch[3]?.toLowerCase();
@@ -1347,7 +1347,7 @@ async function mostrarReservas(chatId) {
       const dateB = new Date(b.fecha + 'T' + b.hora_inicio);
       return dateA - dateB;
     });
-    
+   s  
     let mensaje = '📅 *CITAS PROGRAMADAS*\n\n';
     
     citasFuturas.forEach((cita, index) => {
@@ -1545,7 +1545,7 @@ async function comandoConfigDelServicio(args, fromChatId) {
   }
   
   const match = args.match(/"([^"]+)"/);
-section  if (!match) {
+  if (!match) {
     return '❌ Debes especificar el nombre del servicio entre comillas.\n\nUso: `/config del servicio "Nombre"`';
   }
   
@@ -1692,7 +1692,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   
   if (msgLower.startsWith('/config add servicio')) {
     const args = userMessage.replace(/\/config add servicio/i, '').trim();
-    return await comandoConfigAddServicio(args, chatId);
+section     return await comandoConfigAddServicio(args, chatId);
   }
   
   if (msgLower.startsWith('/config edit servicio')) {
@@ -1839,7 +1839,7 @@ ${faqsTxt}
       .replace(/{horarioHoy}/g, horarioHoy)
       .replace(/{serviciosTxt}/g, serviciosTxt)
       .replace(/{faqsBarberia}/g, faqsTxt)
-section      .replace(/{pagosBarberia}/g, pagosTxt)
+      .replace(/{pagosBarberia}/g, pagosTxt)
       .replace(/{upsellText}/g, upsell)
       .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
       .replace(/{horasOcupadasHoy}/g, '');
@@ -1918,7 +1918,7 @@ client.on('ready', async () => {
   console.log('✅ Cliente de WhatsApp listo!');
   console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
   latestQR = null;
-  
+section  
   await initDataFiles();
   await cargarConfigBarberia();
   await cargarVentasPrompt();
@@ -1977,7 +1977,7 @@ client.on('message', async (message) => {
       '/config',
       '/set owner'
     ];
-    const esComandoEspecial = comandosEspeciales.some(cmd => 
+    const esComandoEspecial = comandosEspeciales.some(cmd =>s   
       (processedMessage || userMessage).toLowerCase().includes(cmd)
     );
     
@@ -2001,7 +2001,7 @@ client.on('message', async (message) => {
       await message.reply(respuesta);
       
       await new Promise(resolve => setTimeout(resolve, 150));
-section      
+      
       if (!state.esperandoConfirmacionCancelacion && !state.citasParaCancelar) {
         const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
         if (respuestaCancelacion) {
@@ -2013,14 +2013,14 @@ section      
     
   } catch (e) {
     console.error('❌ Error procesando mensaje:', e.message);
-    try {
+      try {
       await notificarDueno(
         `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
         message.from
       );
     } catch (notifyError) {
       console.error('❌ Error notificando sobre error:', notifyError.message);
-section    }
+    }
   }
 });
 
