@@ -38,6 +38,30 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// ========== 🛡️ ANTI-BAN: HUMAN-LIKE DELAYS ==========
+const MIN_RESPONSE_DELAY = 2000; // 2 seconds minimum
+const MAX_RESPONSE_DELAY = 5000; // 5 seconds maximum
+
+function humanDelay() {
+  const delay = Math.floor(Math.random() * (MAX_RESPONSE_DELAY - MIN_RESPONSE_DELAY + 1)) + MIN_RESPONSE_DELAY;
+  console.log(`[🕐 ANTI-BAN] Waiting ${(delay/1000).toFixed(1)}s before responding...`);
+  return new Promise(resolve => setTimeout(resolve, delay));
+}
+
+async function sendWithTyping(chat, message) {
+  try {
+    await chat.sendStateTyping(); // Show "typing..."
+    await humanDelay(); // Wait like human typing
+    await chat.sendMessage(message);
+    await chat.clearState(); // Stop typing indicator
+  } catch (error) {
+    // Fallback if typing state fails
+    console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
+    await humanDelay();
+    await chat.sendMessage(message);
+  }
+}
+
 
 // ========== WHATSAPP CLIENT ==========
 const client = new Client({
@@ -1899,11 +1923,13 @@ client.on('message', async (message) => {
           processedMessage = transcript;
           console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
         } else {
+          await humanDelay(); // 🛡️ Anti-ban
           await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
           return;
         }
       } catch (e) {
         console.error('[Handler Voz] Error:', e);
+        await humanDelay(); // 🛡️ Anti-ban
         await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
         return;
       }
@@ -1938,6 +1964,7 @@ client.on('message', async (message) => {
     
     if (respuestaCancelacion) {
       // Se detectó y manejó una cancelación
+      await humanDelay(); // 🛡️ Anti-ban
       await message.reply(respuestaCancelacion);
       return; // No pasar a OpenAI
     }
@@ -1945,6 +1972,7 @@ client.on('message', async (message) => {
     const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
     
     if (respuesta) {
+      await humanDelay(); // 🛡️ Anti-ban
       await message.reply(respuesta);
     }
     
