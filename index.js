@@ -395,7 +395,9 @@ function parseTagJsonLoose(str) {
         depth--;
         if (depth === 0) {
           const candidate = normalized.slice(s, i + 1);
-          return JSON.parse(candidate);
+          // Re-normalizar por si hay comillas simples o claves sin comillas
+          const clean = _normalizeJsonLikeString(candidate);
+          return JSON.parse(clean);
         }
       }
     }
@@ -958,7 +960,20 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
     }
-      // Si tenemos datos suficientes, crear la cita automáticamente (fallback cuando el LLM no emitió el tag)
+      
+      // Heurística de nombre: si no se detectó, usar último mensaje corto del usuario como posible nombre
+      if (!nombre) {
+        const lastUser = ultimos.filter(m => m.fromUser).slice(-1)[0];
+        if (lastUser) {
+          const txt = (lastUser.content || '').trim();
+          // 4-30 chars, contiene letras, no empieza con comando
+          if (txt.length >= 4 && txt.length <= 30 && /[a-zA-Záéíóúñ]/i.test(txt) && !txt.startsWith('/')) {
+            nombre = txt;
+            console.log('[🔎 AUTO-CITA] Nombre inferido por heurística:', nombre);
+          }
+        }
+      }
+// Si tenemos datos suficientes, crear la cita automáticamente (fallback cuando el LLM no emitió el tag)
       if (fecha && hora && (servicio || true) && nombre) {
         // Resolver servicio por aproximación si falta
         let servicioResolved = servicio;
