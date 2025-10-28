@@ -5,7 +5,7 @@ nixPkgs = [
   'nss',
   'freetype',
   'harfbuzz',
-  'ca-certificates',
+  'cacert',
   'ttf-freefont',
   'xorg.libxscrnsaver',
   'xorg.libX11',
