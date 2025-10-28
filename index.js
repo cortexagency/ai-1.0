@@ -74,15 +74,9 @@ const PUPPETEER_CONFIG = {
     '--no-zygote',
     '--single-process',
     '--disable-gpu',
-    '--disable-extensions',
-    '--disable-web-security',
-    '--disable-features=IsolateOrigins,site-per-process',
-    '--disable-blink-features=AutomationControlled'
+    '--disable-extensions'
   ],
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
-                  process.env.CHROME_BIN || 
-                  process.env.CHROMIUM_PATH ||
-                  undefined
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
 };
 
 console.log('🔧 Puppeteer Config:', {

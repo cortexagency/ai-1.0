@@ -12,7 +12,7 @@ cmds = [
 # 🔥 CORRECCIÓN CRÍTICA: Paths alternativos para Chromium en Nixpacks/Railway
 cmd = '''
 export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-export PUPPETEER_EXECUTABLE_PATH=$(which chromium || echo "/nix/store/$(ls /nix/store | grep chromium | head -n1)/bin/chromium")
+export PUPPETEER_EXECUTABLE_PATH=$(which chromium)
 export DISPLAY=:99
 
 # Configuración adicional para entorno headless
@@ -27,3 +27,4 @@ node index.js
 
 [variables]
 PUPPETEER_SKIP_DOWNLOAD = 'true'
+CHROME_BIN = '/usr/bin/chromium'
