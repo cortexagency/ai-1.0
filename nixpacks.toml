@@ -1,27 +1,45 @@
 [phases.setup]
-nixPkgs = ['nodejs_20', 'chromium', 'nss', 'freetype', 'harfbuzz', 'ca-certificates', 'ttf-freefont']
+nixPkgs = [
+  'nodejs_20',
+  'chromium',
+  'nss',
+  'freetype',
+  'harfbuzz',
+  'ca-certificates',
+  'ttf-freefont',
+  'xorg.libxscrnsaver',
+  'xorg.libX11',
+  'xorg.libXcomposite',
+  'xorg.libXcursor',
+  'xorg.libXdamage',
+  'xorg.libXext',
+  'xorg.libXfixes',
+  'xorg.libXi',
+  'xorg.libXrender',
+  'xorg.libXtst',
+  'libxshmfence'
+]
 
 [phases.install]
 cmds = [
-  'npm ci --prefer-offline --no-audit --registry=https://registry.npmjs.org/',
-  # Verificar instalación de Chromium
+  'npm ci --prefer-offline --no-audit',
   'echo "Verificando Chromium..." && which chromium && chromium --version || echo "Chromium no encontrado"'
 ]
 
 [start]
-# 🔥 CORRECCIÓN CRÍTICA: Paths alternativos para Chromium en Nixpacks/Railway
 cmd = '''
 export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-export PUPPETEER_EXECUTABLE_PATH=$(which chromium)
-export DISPLAY=:99
+export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+export CHROME_BIN=/usr/bin/chromium
+export CHROMIUM_PATH=/usr/bin/chromium
 
-# Configuración adicional para entorno headless
-export CHROME_BIN=$PUPPETEER_EXECUTABLE_PATH
-export CHROMIUM_PATH=$PUPPETEER_EXECUTABLE_PATH
+# Debug info
+echo "🔧 Debug: Environment Setup"
+echo "PUPPETEER_EXECUTABLE_PATH=$PUPPETEER_EXECUTABLE_PATH"
+echo "CHROME_BIN=$CHROME_BIN"
+echo "CHROMIUM_PATH=$CHROMIUM_PATH"
 
-echo "🔧 Chromium path: $PUPPETEER_EXECUTABLE_PATH"
-
-# Iniciar bot con reintentos
+# Start bot with better error handling
 node index.js
 '''
 

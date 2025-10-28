@@ -64,55 +64,86 @@ async function sendWithTyping(chat, message) {
 
 // ========== 🔥 CONFIGURACIÓN PUPPETEER MEJORADA ==========
 const PUPPETEER_CONFIG = {
-  headless: true,
+  headless: 'new',
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     '--disable-accelerated-2d-canvas',
+    '--disable-gpu',
     '--no-first-run',
     '--no-zygote',
     '--single-process',
-    '--disable-gpu',
-    '--disable-extensions'
+    '--disable-web-security',
+    '--disable-features=site-per-process',
+    '--allow-insecure-localhost',
+    '--window-size=1280,720'
   ],
+  ignoreHTTPSErrors: true,
   executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
 };
 
-console.log('🔧 Puppeteer Config:', {
-  executablePath: PUPPETEER_CONFIG.executablePath,
-  env: {
-    PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
-    CHROME_BIN: process.env.CHROME_BIN,
-    CHROMIUM_PATH: process.env.CHROMIUM_PATH
-  }
-});
+// console.log('🔧 Puppeteer Config:', {
+//   executablePath: PUPPETEER_CONFIG.executablePath,
+//   env: {
+//     PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
+//     CHROME_BIN: process.env.CHROME_BIN,
+//     CHROMIUM_PATH: process.env.CHROMIUM_PATH
+//   }
+// });
 
 // ========== WHATSAPP CLIENT (CON MANEJO DE ERRORES) ==========
 let client;
+let initializationStarted = false;
+let qrGenerationTime = null;
+const QR_TIMEOUT = 60000; // 60 seconds timeout for QR
+
+// Add initialization retry mechanism
+let initRetries = 0;
+const MAX_RETRIES = 3;
 
 async function initializeWhatsAppClient() {
   try {
-    // Create new client instance
+    if (initializationStarted) {
+      console.log('⚠️ Initialization already in progress...');
+      return false;
+    }
+
+    initializationStarted = true;
+    console.log('🚀 Initializing WhatsApp client...');
+    console.log('🔧 Puppeteer Config:', {
+      executablePath: PUPPETEER_CONFIG.executablePath,
+      headless: PUPPETEER_CONFIG.headless,
+      args: PUPPETEER_CONFIG.args
+    });
+    
+    // Create new client instance with improved error handling
     client = new Client({
       authStrategy: new LocalAuth({ 
         dataPath: path.join(DATA_DIR, 'session'),
         clientId: 'cortex-ai-bot'
       }), 
-      puppeteer: PUPPETEER_CONFIG,
-      qrTimeout: 0,
-      authTimeout: 0,
+      puppeteer: {
+        ...PUPPETEER_CONFIG,
+        // Ensure these critical args are included
+        args: [
+          ...PUPPETEER_CONFIG.args,
+          '--no-sandbox',
+          '--disable-setuid-sandbox'
+        ]
+      },
+      qrTimeoutMs: 60000,
+      authTimeoutMs: 60000,
       restartOnAuthFail: true,
       qrMaxRetries: 5
     });
 
-    // Add event handlers
+    // Event handlers with improved logging
     client.on('qr', (qr) => {
-      console.log('📱 Código QR generado!');
-      console.log('🌐 Abre este link para escanear:');
-      console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
+      console.log('📱 New QR Code received');
       latestQR = qr;
       clientStatus = 'qr_ready';
+      qrGenerationTime = Date.now();
       qrcode.generate(qr, { small: true });
     });
 
@@ -143,10 +174,17 @@ async function initializeWhatsAppClient() {
       clientStatus = 'error';
     });
 
-    client.on('disconnected', (r) => {
-      console.log('❌ Cliente desconectado:', r);
-      latestQR = null;
+    client.on('disconnected', async (reason) => {
+      console.log('❌ Cliente desconectado:', reason);
       clientStatus = 'disconnected';
+      latestQR = null;
+      
+      // Try to reconnect
+      if (initRetries < MAX_RETRIES) {
+        initRetries++;
+        console.log(`🔄 Attempting reconnection (${initRetries}/${MAX_RETRIES})...`);
+        setTimeout(() => initializeWhatsAppClient(), 5000);
+      }
     });
 
     client.on('message', async (message) => {
@@ -233,15 +271,31 @@ async function initializeWhatsAppClient() {
       }
     });
 
-    // Initialize the client
-    await client.initialize();
-    console.log('✅ WhatsApp Client configurado correctamente');
+    // Initialize with timeout
+    const initPromise = client.initialize();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Initialization timeout after 30s')), 30000)
+    );
+
+    await Promise.race([initPromise, timeoutPromise]);
+    console.log('✅ Client initialization completed');
     return true;
 
   } catch (error) {
-    console.error('❌ ERROR CRÍTICO al configurar WhatsApp Client:', error);
-    console.error('Stack completo:', error.stack);
+    console.error('❌ CRITICAL ERROR initializing WhatsApp client:', error);
+    console.error('Stack trace:', error.stack);
+    clientStatus = 'error';
+    
+    // Retry logic
+    if (initRetries < MAX_RETRIES) {
+      initRetries++;
+      console.log(`🔄 Retrying initialization (${initRetries}/${MAX_RETRIES})...`);
+      setTimeout(() => initializeWhatsAppClient(), 5000);
+    }
+    
     return false;
+  } finally {
+    initializationStarted = false;
   }
 }
 
@@ -290,10 +344,29 @@ app.get('/', (req, res) => {
 });
 
 app.get('/qr', async (req, res) => {
-  if (!latestQR) {
+  // Add cache control headers
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  // Check QR timeout
+  if (qrGenerationTime && Date.now() - qrGenerationTime > QR_TIMEOUT) {
+    latestQR = null;
+    clientStatus = 'timeout';
+  }
+
+  if (!latestQR || clientStatus === 'ready' || clientStatus === 'error' || clientStatus === 'timeout') {
+    const status = {
+      ready: '✅ Cliente conectado',
+      error: '❌ Error de conexión',
+      timeout: '⏰ QR expirado, refresca la página',
+      initializing: '⏳ Iniciando cliente...',
+      disconnected: '🔌 Desconectado'
+    }[clientStatus] || '⏳ Generando QR...';
+
     return res.send(`
       <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - QR Code</title>
+        <title>Cortex AI Bot - Estado</title>
         <meta http-equiv="refresh" content="3">
         <style>
           body {
@@ -306,24 +379,37 @@ app.get('/qr', async (req, res) => {
             min-height: 100vh;
             text-align: center;
             padding: 20px;
+            margin: 0;
           }
+          .status-box {
+            background: rgba(0,255,0,0.1);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #0f0;
+          }
+          .error { color: #ff0000; border-color: #ff0000; background: rgba(255,0,0,0.1); }
+          .warning { color: #ffaa00; border-color: #ffaa00; background: rgba(255,170,0,0.1); }
         </style>
       </head><body>
-        <div>
-          <h2>⏳ Generando código QR...</h2>
-          <p>El bot está iniciando. La página se actualizará automáticamente.</p>
-          <p><strong>Status:</strong> ${clientStatus}</p>
+        <div class="status-box ${clientStatus === 'error' ? 'error' : clientStatus === 'timeout' ? 'warning' : ''}">
+          <h2>${status}</h2>
+          <p>Estado: ${clientStatus}</p>
+          <p>Última actualización: ${new Date().toLocaleTimeString()}</p>
+          ${clientStatus === 'error' || clientStatus === 'timeout' ? 
+            '<p><button onclick="window.location.reload()">Reintentar</button></p>' : 
+            '<p>Actualizando automáticamente...</p>'}
         </div>
-      </body></html>
+      </body>
+      </html>
     `);
   }
 
   try {
     const qrSVG = await QRCode.toString(latestQR, { 
-      type: 'svg', 
-      width: 400, 
-      margin: 2, 
-      color: { dark: '#000', light: '#fff' } 
+      type: 'svg',
+      width: 400,
+      margin: 2,
+      color: { dark: '#000', light: '#fff' }
     });
     
     res.send(`
@@ -392,10 +478,10 @@ app.get('/qr', async (req, res) => {
       </body></html>
     `);
   } catch (error) {
-    console.error('Error generando QR:', error);
+    console.error('Error generating QR:', error);
     res.status(500).send(`
       <html><head><title>Error</title>
-      <style>body {font-family: monospace; background: #000; color: #f00; padding: 20px; text-align: center;}</style>
+      <style>body { font-family: monospace; background: #000; color: #f00; padding: 20px; text-align: center; }</style>
       </head><body>
         <h1>❌ Error generando QR</h1>
         <p>${error.message}</p>
@@ -1876,35 +1962,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   if (msgLower.includes('/end test')) { 
     state.mode = 'sales'; 
     state.conversationHistory = []; 
-    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?'; 
-  }
-
-  const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
-  const esEmergencia = palabrasEmergencia.some(p => msgLower.includes(p));
-  
-  if (esEmergencia) {
-    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`, chatId);
-  }
-
-  let systemPrompt = '';
-  
-  if (state.mode === 'demo') {
-    const hoy = now(); 
-    const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
-    const fechaISO = hoy.toFormat('yyyy-MM-dd');
-    
-    const duracionDefault = 40;
-    const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
-    
-    const horario = BARBERIA_CONFIG?.horario || {}; 
-    const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
-    const direccion = BARBERIA_CONFIG?.negocio?.direccion || ''; 
-    const telefono = BARBERIA_CONFIG?.negocio?.telefono || '';
-    
-    const serviciosTxt = generarTextoServicios(); 
-    const faqsTxt = generarTextoFAQs(); 
-    const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
-    const upsell = BARBERIA_CONFIG?.upsell || ''; 
+    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n
     
     const horarioLv = horario.lun_vie || ''; 
     const horarioS = horario.sab || ''; 
