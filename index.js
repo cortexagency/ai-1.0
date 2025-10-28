@@ -101,6 +101,36 @@ let clientInitialized = false;
 let initializationPromise = null;
 let qrGenerationTime = null;
 
+// ========== CLEANUP FUNCTION FOR STALE LOCKS ==========
+async function cleanupStaleLocks() {
+  try {
+    const sessionDir = path.join(DATA_DIR, 'session', 'session-cortex-ai-bot');
+    const lockFile = path.join(sessionDir, 'SingletonLock');
+    const socketFile = path.join(sessionDir, 'SingletonSocket');
+    
+    // Check and remove SingletonLock
+    try {
+      await fs.access(lockFile);
+      await fs.unlink(lockFile);
+      console.log('🧹 Removed stale SingletonLock file');
+    } catch (err) {
+      // File doesn't exist, which is fine
+    }
+    
+    // Check and remove SingletonSocket
+    try {
+      await fs.access(socketFile);
+      await fs.unlink(socketFile);
+      console.log('🧹 Removed stale SingletonSocket file');
+    } catch (err) {
+      // File doesn't exist, which is fine
+    }
+  } catch (error) {
+    console.log('⚠️ Could not clean lock files:', error.message);
+  }
+}
+
+
 async function initializeWhatsAppClient() {
   if (initializationPromise) {
     console.log('⏳ Waiting for existing initialization...');
@@ -110,6 +140,8 @@ async function initializeWhatsAppClient() {
   initializationPromise = (async () => {
     try {
       console.log('🚀 Starting WhatsApp client initialization...');
+      // Clean up any stale lock files before starting
+      await cleanupStaleLocks();
       clientStatus = 'initializing';
 
       client = new Client({
@@ -167,11 +199,15 @@ async function initializeWhatsAppClient() {
       ]);
 
       return true;
+    } finally {
     } catch (error) {
       console.error('❌ Initialization failed:', error);
       clientStatus = 'error';
+      
+      // Clean up locks on error
+      await cleanupStaleLocks().catch(() => {});
+      
       throw error;
-    } finally {
       initializationPromise = null;
     }
   })();
@@ -2060,3 +2096,31 @@ Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano pais
     return 'Lo siento, hubo un problema procesando tu solicitud. Intenta nuevamente más tarde.';
   }
 }
+// ========== CLEANUP ON PROCESS EXIT ==========
+process.on('SIGTERM', async () => {
+  console.log('⚠️ SIGTERM received, cleaning up...');
+  await cleanupStaleLocks().catch(() => {});
+  if (client) {
+    await client.destroy().catch(() => {});
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('⚠️ SIGINT received, cleaning up...');
+  await cleanupStaleLocks().catch(() => {});
+  if (client) {
+    await client.destroy().catch(() => {});
+  }
+  process.exit(0);
+});
+
+process.on('uncaughtException', async (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  await cleanupStaleLocks().catch(() => {});
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+  await cleanupStaleLocks().catch(() => {});
+});
