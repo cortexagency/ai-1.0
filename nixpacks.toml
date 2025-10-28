@@ -26,24 +26,12 @@ nixPkgs = [
 
 [phases.install]
 cmds = [
-  'npm ci --prefer-offline --no-audit',
-  'echo "✅ Verificando Chromium..." && which chromium && chromium --version || echo "❌ Chromium no encontrado"'
+  'npm ci --prefer-offline --no-audit'
 ]
 
 [start]
-cmd = '''
-# Set Chromium path for puppeteer helper
-export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-
-# Debug info
-echo "🔧 Chromium Configuration:"
-echo "  PUPPETEER_EXECUTABLE_PATH=$PUPPETEER_EXECUTABLE_PATH"
-which chromium || echo "⚠️ Chromium not in PATH"
-
-# Start the bot
-node index.js
-'''
+cmd = "node index.js"
 
 [variables]
 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
+PUPPETEER_EXECUTABLE_PATH = '/usr/bin/chromium'

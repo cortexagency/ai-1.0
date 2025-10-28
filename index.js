@@ -14,7 +14,7 @@ const { DateTime } = require('luxon');
 const express = require('express');
 
 // Import the Puppeteer helper for robust browser launching
-const { launchBrowser } = require('./lib/puppeteer-launch');
+const { launchBrowser } = require('./puppeteer-launch');
 // ========== CONFIGURACIÓN ==========
 let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554';
 let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
