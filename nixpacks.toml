@@ -1,12 +1,16 @@
+# nixpacks.toml
 [phases.setup]
-nixPkgs = ['nodejs_20', 'chromium']
+aptPkgs = [
+"chromium", "libnss3", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libgbm1", "libasound2",
+"libpangocairo-1.0-0", "libxss1", "libgtk-3-0", "libxshmfence1", "libglu1", "fonts-liberation", "libu2f-udev"
+]
+
 
 [phases.install]
-cmds = ['npm ci --prefer-offline --no-audit']
+cmds = ["npm install --omit=dev --no-audit"]
 
-[start]
-cmd = "node index.js"
 
 [variables]
-PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
-PUPPETEER_EXECUTABLE_PATH = '/usr/bin/chromium'
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+PUPPETEER_EXECUTABLE_PATH = "/usr/bin/chromium"
+NODE_ENV = "production"
