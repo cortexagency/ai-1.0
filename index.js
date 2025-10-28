@@ -93,216 +93,92 @@ const PUPPETEER_CONFIG = {
 // });
 
 // ========== WHATSAPP CLIENT (CON MANEJO DE ERRORES) ==========
-let client;
-let initializationStarted = false;
-let qrGenerationTime = null;
-const QR_TIMEOUT = 60000; // 60 seconds timeout for QR
-
-// Add initialization retry mechanism
-let initRetries = 0;
-const MAX_RETRIES = 3;
+let client = null;
+let latestQR = null;
+let clientStatus = 'initializing';
+let clientInitialized = false;
+let initializationPromise = null;
 
 async function initializeWhatsAppClient() {
-  try {
-    if (initializationStarted) {
-      console.log('⚠️ Initialization already in progress...');
-      return false;
-    }
-
-    initializationStarted = true;
-    console.log('🚀 Initializing WhatsApp client...');
-    console.log('🔧 Puppeteer Config:', {
-      executablePath: PUPPETEER_CONFIG.executablePath,
-      headless: PUPPETEER_CONFIG.headless,
-      args: PUPPETEER_CONFIG.args
-    });
-    
-    // Create new client instance with improved error handling
-    client = new Client({
-      authStrategy: new LocalAuth({ 
-        dataPath: path.join(DATA_DIR, 'session'),
-        clientId: 'cortex-ai-bot'
-      }), 
-      puppeteer: {
-        ...PUPPETEER_CONFIG,
-        // Ensure these critical args are included
-        args: [
-          ...PUPPETEER_CONFIG.args,
-          '--no-sandbox',
-          '--disable-setuid-sandbox'
-        ]
-      },
-      qrTimeoutMs: 60000,
-      authTimeoutMs: 60000,
-      restartOnAuthFail: true,
-      qrMaxRetries: 5
-    });
-
-    // Event handlers with improved logging
-    client.on('qr', (qr) => {
-      console.log('📱 New QR Code received');
-      latestQR = qr;
-      clientStatus = 'qr_ready';
-      qrGenerationTime = Date.now();
-      qrcode.generate(qr, { small: true });
-    });
-
-    client.on('ready', async () => {
-      console.log('✅ Cliente de WhatsApp listo!');
-      console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
-      latestQR = null;
-      clientStatus = 'ready';
-      
-      await initDataFiles();
-      await cargarConfigBarberia();
-      await cargarVentasPrompt();
-      
-      console.log('📋 Estado de archivos:');
-      console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
-      console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
-      console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
-    });
-
-    client.on('authenticated', () => {
-      console.log('✅ Autenticación exitosa!');
-      clientStatus = 'authenticated';
-    });
-
-    client.on('auth_failure', (msg) => {
-      console.error('❌ Fallo de autenticación:', msg);
-      latestQR = null;
-      clientStatus = 'error';
-    });
-
-    client.on('disconnected', async (reason) => {
-      console.log('❌ Cliente desconectado:', reason);
-      clientStatus = 'disconnected';
-      latestQR = null;
-      
-      // Try to reconnect
-      if (initRetries < MAX_RETRIES) {
-        initRetries++;
-        console.log(`🔄 Attempting reconnection (${initRetries}/${MAX_RETRIES})...`);
-        setTimeout(() => initializeWhatsAppClient(), 5000);
-      }
-    });
-
-    client.on('message', async (message) => {
-      try {
-        if (message.from.includes('@g.us') || message.fromMe) return;
-        
-        const userId = message.from;
-        const userMessage = (message.body || '').trim();
-        const state = getUserState(userId);
-
-        let processedMessage = userMessage;
-        
-        if (message.hasMedia && 
-            (message.type === 'audio' || 
-             message.type === 'ptt' || 
-             (message.mimetype && message.mimetype.startsWith('audio/')))) {
-          try {
-            const transcript = await transcribeVoiceFromMsg(message);
-            if (transcript) {
-              processedMessage = transcript;
-              console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
-            } else {
-              await humanDelay();
-              await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
-              return;
-            }
-          } catch (e) {
-            console.error('[Handler Voz] Error:', e);
-            await humanDelay();
-            await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
-            return;
-          }
-        }
-        
-        if (!processedMessage && !userMessage.startsWith('/')) return;
-        
-        console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
-        
-        const comandosEspeciales = [
-          '/bot on', 
-          '/bot off', 
-          '/show bookings', 
-          '/send later', 
-          '/start test', 
-          '/end test', 
-          '/ayuda', 
-          '/help',
-          '/config',
-          '/set owner'
-        ];
-        const esComandoEspecial = comandosEspeciales.some(cmd => 
-          (processedMessage || userMessage).toLowerCase().includes(cmd)
-        );
-        
-        if (!state.botEnabled && !esComandoEspecial) {
-          return;
-        }
-
-        const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
-        
-        if (respuestaCancelacion) {
-          await humanDelay();
-          await message.reply(respuestaCancelacion);
-          return;
-        }
-
-        const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
-        
-        if (respuesta) {
-          await humanDelay();
-          await message.reply(respuesta);
-        }
-        
-      } catch (e) {
-        console.error('❌ Error procesando mensaje:', e.message);
-        try {
-          await notificarDueno(
-            `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
-            message.from
-          );
-        } catch (notifyError) {
-          console.error('❌ Error notificando sobre error:', notifyError.message);
-        }
-      }
-    });
-
-    // Initialize with timeout
-    const initPromise = client.initialize();
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Initialization timeout after 30s')), 30000)
-    );
-
-    await Promise.race([initPromise, timeoutPromise]);
-    console.log('✅ Client initialization completed');
-    return true;
-
-  } catch (error) {
-    console.error('❌ CRITICAL ERROR initializing WhatsApp client:', error);
-    console.error('Stack trace:', error.stack);
-    clientStatus = 'error';
-    
-    // Retry logic
-    if (initRetries < MAX_RETRIES) {
-      initRetries++;
-      console.log(`🔄 Retrying initialization (${initRetries}/${MAX_RETRIES})...`);
-      setTimeout(() => initializeWhatsAppClient(), 5000);
-    }
-    
-    return false;
-  } finally {
-    initializationStarted = false;
+  if (initializationPromise) {
+    console.log('⏳ Waiting for existing initialization...');
+    return initializationPromise;
   }
+
+  initializationPromise = (async () => {
+    try {
+      console.log('🚀 Starting WhatsApp client initialization...');
+      clientStatus = 'initializing';
+
+      client = new Client({
+        authStrategy: new LocalAuth({ 
+          dataPath: path.join(DATA_DIR, 'session'),
+          clientId: 'cortex-ai-bot'
+        }),
+        puppeteer: PUPPETEER_CONFIG,
+        qrTimeoutMs: QR_TIMEOUT,
+        authTimeoutMs: 60000,
+        restartOnAuthFail: true,
+        qrMaxRetries: 5
+      });
+
+      // Set up event handlers
+      client.on('qr', (qr) => {
+        console.log('📱 New QR Code received');
+        latestQR = qr;
+        clientStatus = 'qr_ready';
+        qrGenerationTime = Date.now();
+      });
+
+      client.on('ready', () => {
+        console.log('✅ Client ready');
+        clientStatus = 'ready';
+        latestQR = null;
+        clientInitialized = true;
+      });
+
+      client.on('auth_failure', (msg) => {
+        console.error('❌ Auth failure:', msg);
+        clientStatus = 'error';
+        latestQR = null;
+      });
+
+      client.on('disconnected', (reason) => {
+        console.log('❌ Client disconnected:', reason);
+        clientStatus = 'disconnected';
+        clientInitialized = false;
+        latestQR = null;
+        
+        // Auto reconnect after delay
+        setTimeout(() => {
+          console.log('🔄 Attempting reconnection...');
+          initializeWhatsAppClient().catch(console.error);
+        }, 5000);
+      });
+
+      // Initialize with timeout
+      await Promise.race([
+        client.initialize(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Initialization timeout')), 30000)
+        )
+      ]);
+
+      return true;
+    } catch (error) {
+      console.error('❌ Initialization failed:', error);
+      clientStatus = 'error';
+      throw error;
+    } finally {
+      initializationPromise = null;
+    }
+  })();
+
+  return initializationPromise;
 }
 
 // ========== EXPRESS SERVER ==========
 const app = express();
-let latestQR = null;
-let clientStatus = 'initializing';
 
 app.get('/', (req, res) => {
   res.send(`
@@ -345,13 +221,58 @@ app.get('/', (req, res) => {
 
 // Update the QR endpoint with better error handling
 app.get('/qr', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
+    res.setHeader('Cache-Control', 'no-cache');
     
     try {
-        if (!client) {
-            throw new Error('WhatsApp client not initialized');
+        // Check if client is initializing
+        if (clientStatus === 'initializing') {
+            return res.send(`
+                <!DOCTYPE html><html><head>
+                    <title>Iniciando...</title>
+                    <meta http-equiv="refresh" content="5">
+                    <style>
+                        body { 
+                            font-family: monospace;
+                            background: #000;
+                            color: #0f0;
+                            text-align: center;
+                            padding: 20px;
+                        }
+                    </style>
+                </head><body>
+                    <h2>⏳ Iniciando cliente...</h2>
+                    <p>Por favor espera...</p>
+                    <p>Actualizando en 5 segundos...</p>
+                </body></html>
+            `);
+        }
+
+        // Try to initialize if not ready
+        if (!clientInitialized) {
+            try {
+                await initializeWhatsAppClient();
+            } catch (error) {
+                console.error('Failed to initialize client:', error);
+                return res.status(500).send(`
+                    <!DOCTYPE html><html><head>
+                        <title>Error</title>
+                        <meta http-equiv="refresh" content="5">
+                        <style>
+                            body { 
+                                font-family: monospace;
+                                background: #000;
+                                color: #ff0000;
+                                text-align: center;
+                                padding: 20px;
+                            }
+                        </style>
+                    </head><body>
+                        <h2>❌ Error de inicialización</h2>
+                        <p>${error.message}</p>
+                        <p>Reintentando en 5 segundos...</p>
+                    </body></html>
+                `);
+            }
         }
 
         // Check QR timeout
@@ -417,7 +338,8 @@ app.get('/qr', async (req, res) => {
                             '<button class="retry-btn" onclick="window.location.reload()">Reintentar</button>' : 
                             '<p>Actualizando automáticamente...</p>'}
                     </div>
-                </body></html>
+                </body>
+            </html>
             `);
         }
 
@@ -548,10 +470,13 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`✅ HTTP server running on port ${PORT}`);
-  console.log(`🌐 Accede al QR en: https://ai-10-production.up.railway.app/qr`);
-  console.log(`🏥 Health check: https://ai-10-production.up.railway.app/health`);
+  try {
+    await initializeWhatsAppClient();
+  } catch (error) {
+    console.error('❌ Initial client initialization failed:', error);
+  }
 });
 
 // ========== HELPERS FS (CON MEJOR MANEJO DE ERRORES) ==========
