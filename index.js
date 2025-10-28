@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (Optimizado y Consolidado)
+// CORTEX IA - INDEX.JS (Fixed & Complete)
 // =========================
 require('dotenv').config();
 
@@ -38,57 +38,131 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 // ========== 🛡️ ANTI-BAN: HUMAN-LIKE DELAYS ==========
-const MIN_RESPONSE_DELAY = 2000; // 2 seconds minimum
-const MAX_RESPONSE_DELAY = 5000; // 5 seconds maximum
+const MIN_RESPONSE_DELAY = 2000;
+const MAX_RESPONSE_DELAY = 5000;
 
 function humanDelay() {
   const delay = Math.floor(Math.random() * (MAX_RESPONSE_DELAY - MIN_RESPONSE_DELAY + 1)) + MIN_RESPONSE_DELAY;
-  console.log(`[🕐 ANTI-BAN] Waiting ${(delay/1000).toFixed(1)}s before responding...`);
+  console.log(`[🕒 ANTI-BAN] Waiting ${(delay/1000).toFixed(1)}s before responding...`);
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
 async function sendWithTyping(chat, message) {
   try {
-    await chat.sendStateTyping(); // Show "typing..."
-    await humanDelay(); // Wait like human typing
+    await chat.sendStateTyping();
+    await humanDelay();
     await chat.sendMessage(message);
-    await chat.clearState(); // Stop typing indicator
+    await chat.clearState();
   } catch (error) {
-    // Fallback if typing state fails
     console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
     await humanDelay();
     await chat.sendMessage(message);
   }
 }
 
+// ========== 🔥 CONFIGURACIÓN PUPPETEER MEJORADA ==========
+const PUPPETEER_CONFIG = {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu',
+    '--disable-extensions',
+    '--disable-web-security',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-blink-features=AutomationControlled'
+  ],
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
+                  process.env.CHROME_BIN || 
+                  process.env.CHROMIUM_PATH ||
+                  undefined
+};
 
-// ========== WHATSAPP CLIENT ==========
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }), 
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
-      '--disable-extensions'
-    ]
-  },
-  qrTimeout: 0,
-  authTimeout: 0,
+console.log('🔧 Puppeteer Config:', {
+  executablePath: PUPPETEER_CONFIG.executablePath,
+  env: {
+    PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
+    CHROME_BIN: process.env.CHROME_BIN,
+    CHROMIUM_PATH: process.env.CHROMIUM_PATH
+  }
 });
+
+// ========== WHATSAPP CLIENT (CON MANEJO DE ERRORES) ==========
+let client;
+
+function initializeWhatsAppClient() {
+  try {
+    client = new Client({
+      authStrategy: new LocalAuth({ 
+        dataPath: path.join(DATA_DIR, 'session'),
+        clientId: 'cortex-ai-bot'
+      }), 
+      puppeteer: PUPPETEER_CONFIG,
+      qrTimeout: 0,
+      authTimeout: 0,
+      restartOnAuthFail: true,
+      qrMaxRetries: 5
+    });
+
+    console.log('✅ WhatsApp Client configurado correctamente');
+    return true;
+  } catch (error) {
+    console.error('❌ ERROR CRÍTICO al configurar WhatsApp Client:', error);
+    console.error('Stack completo:', error.stack);
+    return false;
+  }
+}
 
 // ========== EXPRESS SERVER ==========
 const app = express();
 let latestQR = null;
+let clientStatus = 'initializing';
 
-app.get('/', (req, res) => res.send('✅ Cortex AI Bot is running! 🤖'));
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Cortex AI Bot Status</title>
+      <meta http-equiv="refresh" content="5">
+      <style>
+        body {
+          font-family: monospace;
+          background: #0a0a0a;
+          color: #00ff00;
+          padding: 20px;
+          text-align: center;
+        }
+        .status {
+          font-size: 24px;
+          margin: 20px;
+          padding: 20px;
+          border: 2px solid #00ff00;
+          border-radius: 10px;
+          display: inline-block;
+        }
+        .error { border-color: #ff0000; color: #ff0000; }
+        .warning { border-color: #ffaa00; color: #ffaa00; }
+      </style>
+    </head>
+    <body>
+      <h1>🤖 CORTEX AI BOT</h1>
+      <div class="status ${clientStatus === 'error' ? 'error' : clientStatus === 'ready' ? '' : 'warning'}">
+        Status: ${clientStatus.toUpperCase()}
+      </div>
+      <p>🌐 <a href="/qr" style="color: #00ff00;">Ver QR Code</a></p>
+      <p><small>Actualiza automáticamente cada 5 segundos</small></p>
+    </body>
+    </html>
+  `);
+});
 
 app.get('/qr', async (req, res) => {
   if (!latestQR) {
@@ -113,6 +187,7 @@ app.get('/qr', async (req, res) => {
         <div>
           <h2>⏳ Generando código QR...</h2>
           <p>El bot está iniciando. La página se actualizará automáticamente.</p>
+          <p><strong>Status:</strong> ${clientStatus}</p>
         </div>
       </body></html>
     `);
@@ -205,34 +280,81 @@ app.get('/qr', async (req, res) => {
   }
 });
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: clientStatus,
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`✅ HTTP server running on port ${PORT}`);
   console.log(`🌐 Accede al QR en: https://ai-10-production.up.railway.app/qr`);
+  console.log(`🏥 Health check: https://ai-10-production.up.railway.app/health`);
 });
 
-// ========== HELPERS FS ==========
-async function ensureDir(p) { 
-  if (!fssync.existsSync(p)) fssync.mkdirSync(p, { recursive: true }); 
+// ========== HELPERS FS (CON MEJOR MANEJO DE ERRORES) ==========
+async function ensureDir(p) {
+  try {
+    await fs.access(p);
+  } catch {
+    await fs.mkdir(p, { recursive: true });
+    console.log(`✅ Directorio creado: ${p}`);
+  }
 }
 
 async function initDataFiles() {
   try {
     await ensureDir(DATA_DIR);
     await ensureDir(PROMPTS_DIR);
+    await ensureDir(path.join(DATA_DIR, 'session'));
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     for (const [file, def] of [
       [BOOKINGS_FILE, []],
       [RESERVAS_FILE, {}],
       [SCHEDULED_MESSAGES_FILE, []]
     ]) {
-      try { await fs.access(file); } 
-      catch { 
-        await fs.writeFile(file, JSON.stringify(def, null, 2)); 
-        console.log(`✅ Creado: ${path.basename(file)}`); 
+      try {
+        await fs.access(file);
+        const content = await fs.readFile(file, 'utf8');
+        JSON.parse(content);
+        console.log(`✅ Archivo válido: ${path.basename(file)}`);
+      } catch {
+        await fs.writeFile(file, JSON.stringify(def, null, 2));
+        console.log(`✅ Creado: ${path.basename(file)}`);
       }
     }
+
+    if (!fssync.existsSync(BARBERIA_BASE_PATH)) {
+      const defaultBarberiaConfig = {
+        servicios: {
+          "corte clásico": { precio: 25000, min: 40, emoji: "✂️" },
+          "barba": { precio: 20000, min: 30, emoji: "🧔" }
+        },
+        horario: { lun_vie: "9:00-20:00", sab: "9:00-20:00", dom: "Cerrado" },
+        negocio: { nombre: "Barbería Demo", direccion: "Calle Principal #123", telefono: "300-123-4567" },
+        pagos: ["Efectivo", "Nequi", "Bancolombia"],
+        faqs: [],
+        upsell: "",
+        system_prompt: "Eres el asistente de una barbería. Agenda citas de forma eficiente."
+      };
+      await fs.writeFile(BARBERIA_BASE_PATH, JSON.stringify(defaultBarberiaConfig, null, 2));
+      console.log('✅ Creado barberia_base.txt con configuración por defecto');
+    }
+
+    if (!fssync.existsSync(VENTAS_PROMPT_PATH)) {
+      await fs.writeFile(VENTAS_PROMPT_PATH, 'Eres Cortex IA, asistente de ventas. Guía a los usuarios a probar /start test.');
+      console.log('✅ Creado ventas.txt con prompt por defecto');
+    }
+
+    console.log('✅ Todos los archivos de datos inicializados correctamente');
   } catch (error) {
-    console.error('❌ Error inicializando archivos:', error);
+    console.error('❌ Error CRÍTICO inicializando archivos:', error);
+    throw error;
   }
 }
 
@@ -451,12 +573,10 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   
-  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
   const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
   
   let minutoActual = minutoInicio;
   if (esHoy) {
-    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
     const minAhora = ahora.hour * 60 + ahora.minute + 1;
     const proximoSlot = Math.ceil(minAhora / 20) * 20;
     minutoActual = Math.max(minutoInicio, proximoSlot);
@@ -479,7 +599,6 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   return alternativas;
 }
 
-// 🔥 FUNCIÓN CORREGIDA: Genera slots disponibles HOY (sin horas pasadas)
 async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const reservas = await readReservas();
   const slotsReservados = reservas[fecha] || [];
@@ -512,15 +631,11 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   
-  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
   const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
   
   let minutoBusqueda = minutoInicio;
   if (esHoy) {
-    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
-    // Esto evita ofrecer 4:00 PM a las 4:00 PM en punto (ofrecerá 4:20 PM)
-    // Y evita ofrecer 4:00 PM a las 4:32 PM (ofrecerá 4:40 PM)
-    const minAhora = ahora.hour * 60 + ahora.minute + 1; // +1 min buffer
+    const minAhora = ahora.hour * 60 + ahora.minute + 1;
     const proximoSlot = Math.ceil(minAhora / 20) * 20;
     minutoBusqueda = Math.max(minutoInicio, proximoSlot);
     
@@ -529,11 +644,9 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   
   const alternativas = [];
   
-  // Buscar slots disponibles
   for (let m = minutoBusqueda; m <= minutoFin - duracionMinDefault; m += 20) {
     const horaStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
     
-    // Verificar disponibilidad del slot
     const slotsNecesarios = calcularSlotsUsados(horaStr, duracionMinDefault);
     let colision = false;
     
@@ -542,7 +655,6 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
         colision = true;
         break;
       }
-      // Verificar que no se pase del cierre
       const [slotH, slotM] = slot.split(':').map(Number);
       if (slotH * 60 + slotM > minutoFin) {
         colision = true;
@@ -569,15 +681,13 @@ async function procesarTags(mensaje, chatId) {
 
   if (bookingMatch) {
     try {
-    
       const bookingData = JSON.parse(bookingMatch[1]);
     
-    // 🔥 VALIDAR HORA (9 AM - 8 PM)
-    const [h, m] = bookingData.hora_inicio.split(':').map(Number);
-    if (h < 9 || h >= 20) {
-      console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
-      return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
-    }
+      const [h, m] = bookingData.hora_inicio.split(':').map(Number);
+      if (h < 9 || h >= 20) {
+        console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
+        return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
+      }
       
       const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
       const check = await verificarDisponibilidad(
@@ -592,7 +702,7 @@ async function procesarTags(mensaje, chatId) {
         let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
         
         if (alternativas.length > 0) {
-          respuesta += '\n\n🕒 *Horarios disponibles:*\n';
+          respuesta += '\n\n🕐 *Horarios disponibles:*\n';
           alternativas.forEach((h, i) => {
             respuesta += `${i + 1}. ${formatearHora(h)}\n`;
           });
@@ -655,7 +765,6 @@ async function procesarTags(mensaje, chatId) {
       const bookings = await readBookings();
       console.log('[🔥 CANCELACIÓN] Total de citas en sistema:', bookings.length);
       
-      // 🔥 BÚSQUEDA MEJORADA: Sin normalización agresiva
       let b = null;
       
       if (cancelData.id) {
@@ -671,7 +780,6 @@ async function procesarTags(mensaje, chatId) {
           
           const nombreCitaLower = x.nombreCliente.toLowerCase().trim();
           
-          // Match más flexible: contiene o es contenido
           const matchNombre = nombreCitaLower.includes(nombreLower) || nombreLower.includes(nombreCitaLower);
           const matchFecha = x.fecha === cancelData.fecha;
           const matchHora = x.hora_inicio === cancelData.hora_inicio;
@@ -693,7 +801,6 @@ async function procesarTags(mensaje, chatId) {
         b.status = 'cancelled';
         await writeBookings(bookings);
         
-        // Liberar slots
         const reservas = await readReservas();
         if (reservas[b.fecha]) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
@@ -704,7 +811,6 @@ async function procesarTags(mensaje, chatId) {
           await writeReservas(reservas);
         }
         
-        // 🔥 NOTIFICAR AL DUEÑO (SIEMPRE, se filtra dentro de notificarDueno)
         console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
         const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
         await notificarDueno(textoNotificacion, chatId);
@@ -726,7 +832,6 @@ async function procesarTags(mensaje, chatId) {
 // ========== NOTIFICAR AL DUEÑO (VERSION CORREGIDA) ==========
 async function notificarDueno(txt, fromChatId = null) {
   try {
-    // 🔥 VALIDACIÓN CRÍTICA 1: Verificar que el cliente esté inicializado
     if (!client || !client.info) {
       console.error('[❌ NOTIFICACIÓN] Cliente de WhatsApp NO está listo todavía');
       console.error('[❌ NOTIFICACIÓN] client existe:', !!client);
@@ -734,7 +839,6 @@ async function notificarDueno(txt, fromChatId = null) {
       return;
     }
     
-    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
     if (fromChatId === OWNER_CHAT_ID) {
       console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
       return;
@@ -746,7 +850,6 @@ async function notificarDueno(txt, fromChatId = null) {
     console.log(`[📤 NOTIFICACIÓN] Origen: ${fromChatId || 'sistema'}`);
     console.log(`[📤 NOTIFICACIÓN] Cliente listo: ${!!client?.info}`);
     
-    // 🔥 ENVÍO CON TIMEOUT de 15 segundos
     const sendPromise = client.sendMessage(OWNER_CHAT_ID, txt);
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Timeout: no respuesta en 15s')), 15000)
@@ -758,7 +861,7 @@ async function notificarDueno(txt, fromChatId = null) {
     console.log(`[✅ NOTIFICACIÓN] ===================`);
   }
   catch (e) { 
-    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
     console.error('[❌ NOTIFICACIÓN] FALLÓ EL ENVÍO');
     console.error('[❌ NOTIFICACIÓN] Error:', e.message);
     console.error('[❌ NOTIFICACIÓN] Tipo error:', e.constructor.name);
@@ -771,14 +874,13 @@ async function notificarDueno(txt, fromChatId = null) {
       pupBrowser: !!client?.pupBrowser,
       authenticated: client?.info?.wid !== undefined
     });
-    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
   }
 }
 
 // ========== DETECCIÓN AUTOMÁTICA DE CITAS (POST-OPENAI) ==========
 async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, chatId) {
   try {
-    // Solo intentar si la respuesta de OpenAI sugiere confirmación de cita
     const respLower = lastResponse.toLowerCase();
     const esConfirmacion = respLower.includes('agend') || respLower.includes('confirm') || 
                           respLower.includes('reserv') || respLower.includes('listo') ||
@@ -788,7 +890,6 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     console.log('[🔍 AUTO-CITA] Analizando conversación para extraer datos...');
     
-    // Analizar últimos 10 mensajes
     const ultimos = conversationHistory.slice(-10);
     
     let servicio = null;
@@ -802,7 +903,6 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     for (const msg of ultimos) {
       const texto = (msg.content || '').toLowerCase();
       
-      // Buscar servicio
       if (!servicio) {
         for (const srv of serviciosValidos) {
           if (texto.includes(srv.toLowerCase()) || 
@@ -814,7 +914,6 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
-      // Buscar hora (formato flexible: 9am, 9:00, 15:00, etc)
       if (!hora) {
         const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
         if (horaMatch) {
@@ -822,11 +921,9 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
           const m = horaMatch[2] || '00';
           const ampm = horaMatch[3]?.toLowerCase();
           
-          // Convertir a 24h
           if (ampm === 'pm' && h < 12) h += 12;
           if (ampm === 'am' && h === 12) h = 0;
           
-          // Validar horario (9 AM a 8 PM)
           if (h >= 9 && h < 20) {
             hora = `${String(h).padStart(2, '0')}:${m}`;
             console.log('[🔍 AUTO-CITA] Hora encontrada:', hora);
@@ -834,7 +931,6 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
-      // Buscar fecha (palabras clave)
       if (!fecha) {
         if (texto.includes('mañana') || texto.includes('tomorrow')) {
           fecha = ahora.plus({ days: 1 }).toFormat('yyyy-MM-dd');
@@ -848,22 +944,18 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
-      // Buscar nombre (solo en mensajes del usuario)
       if (!nombre && msg.role === 'user') {
-        // Intentar extraer nombre después de palabras clave
         const nombreMatch = texto.match(/(?:soy|nombre|llamo|me llamo)\s+([a-záéíóúñ\s]{2,30})/i);
         if (nombreMatch) {
           nombre = nombreMatch[1].trim();
-          // Capitalizar primera letra
           nombre = nombre.split(' ').map(p => 
             p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
           ).join(' ');
           console.log('[🔍 AUTO-CITA] Nombre encontrado:', nombre);
         } else {
-          // Buscar palabras capitalizadas
           const palabras = msg.content.split(/\s+/);
           for (const palabra of palabras) {
-            if (/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}$/.test(palabra) && 
+            if (/^[A-ZÁÉÍÓÚÑ'][a-záéíóúñ]{2,}$/.test(palabra) && 
                 palabra.length > 2 && 
                 !['Para', 'Quiero', 'Hola', 'Buenos', 'Días'].includes(palabra)) {
               nombre = palabra;
@@ -875,13 +967,11 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
       }
     }
     
-    // Verificar si tenemos todos los datos
     if (!servicio || !fecha || !hora || !nombre) {
       console.log('[🔍 AUTO-CITA] Datos incompletos:', { servicio, fecha, hora, nombre });
       return;
     }
     
-    // Verificar si ya existe una cita similar (evitar duplicados)
     const bookings = await readBookings();
     const citaExistente = bookings.find(b => 
       b.chatId === chatId && 
@@ -897,16 +987,13 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     console.log('[🔥 AUTO-CITA] ¡Todos los datos completos! Creando cita...');
     
-    // Verificar disponibilidad
     const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
-    // ======= CAMBIO APLICADO AQUÍ =======
     const check = await verificarDisponibilidad(fecha, hora, duracionMin);
     if (!check.disponible) {
       console.log('[❌ AUTO-CITA] Horario no disponible');
       return;
     }
     
-    // Crear la cita
     const bookingData = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
       chatId,
@@ -921,20 +1008,17 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     bookings.push(bookingData);
     await writeBookings(bookings);
     
-    // Reservar slots
     const reservas = await readReservas();
     const slotsOcupados = calcularSlotsUsados(hora, duracionMin);
     if (!reservas[fecha]) reservas[fecha] = [];
     reservas[fecha].push(...slotsOcupados);
     await writeReservas(reservas);
     
-    // Programar mensajes
     await programarConfirmacion(bookingData);
     await programarRecordatorio(bookingData);
     await programarResena(bookingData);
     await programarExtranamos(bookingData);
     
-    // 🔥 NOTIFICAR AL DUEÑO
     console.log('[🔥 AUTO-CITA] Notificando al dueño...');
     await notificarDueno(
       `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n🔧 ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
@@ -953,7 +1037,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   const msgLower = userMessage.toLowerCase().trim();
   const state = getUserState(chatId);
   
-  // 🔥 CASO 1: Si está esperando confirmación de cancelación
   if (state.esperandoConfirmacionCancelacion && state.citaParaCancelar) {
     const confirma = msgLower === 'si' || msgLower === 'sí' || 
                      msgLower === 'confirmo' || msgLower === 'dale' ||
@@ -965,7 +1048,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     if (confirma) {
       const cita = state.citaParaCancelar;
       
-      // Cancelar la cita
       const bookings = await readBookings();
       const citaIndex = bookings.findIndex(b => b.id === cita.id);
       if (citaIndex !== -1) {
@@ -974,7 +1056,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
         
         console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada:', cita.id);
         
-        // Liberar slots
         const reservas = await readReservas();
         if (reservas[cita.fecha]) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
@@ -984,7 +1065,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
           console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
         }
         
-        // Notificar al dueño
         console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
@@ -1004,9 +1084,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
-  // 🔥 CASO 2: Si tiene lista de citas y responde con número
   if (state.citasParaCancelar && state.citasParaCancelar.length > 0) {
-    // Intentar extraer número del mensaje
     const numeroMatch = userMessage.match(/\b(\d+)\b/);
     
     if (numeroMatch) {
@@ -1016,7 +1094,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
       if (numero >= 1 && numero <= state.citasParaCancelar.length) {
         const cita = state.citasParaCancelar[numero - 1];
         
-        // Preguntar confirmación
         state.esperandoConfirmacionCancelacion = true;
         state.citaParaCancelar = cita;
         state.citasParaCancelar = null;
@@ -1028,11 +1105,9 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
       }
     }
     
-    // Si no es número, limpiar estado y continuar
     state.citasParaCancelar = null;
   }
   
-  // 🔥 CASO 3: Detectar palabras de cancelación
   const palabrasCancelacion = [
     'cancelar',
     'cancela',
@@ -1047,19 +1122,17 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   const esCancelacion = palabrasCancelacion.some(p => msgLower.includes(p));
   
   if (!esCancelacion) {
-    return null; // No es cancelación, continuar normal
+    return null;
   }
   
   console.log('[🔥 CANCELACIÓN DIRECTA] Detectada palabra de cancelación');
   
-  // Buscar citas activas del usuario
   const bookings = await readBookings();
   const ahora = now();
   
   const citasActivas = bookings.filter(b => {
     if (b.chatId !== chatId || b.status === 'cancelled') return false;
     
-    // Filtrar citas pasadas
     const [year, month, day] = b.fecha.split('-').map(Number);
     const [hour, minute] = b.hora_inicio.split(':').map(Number);
     const fechaHoraCita = DateTime.fromObject(
@@ -1076,17 +1149,12 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     return "No encontré ninguna cita activa futura para cancelar. ¿Necesitas ayuda con algo más?";
   }
   
-  // 🔥 CASO 4: Intentar detectar fecha/hora específica en el mensaje
-  // Ejemplo: "cancelar cita del 24" o "cancelar cita de mañana" o "cancelar la de 7:20 PM"
-  
-  // Buscar por hora (7:20, 19:20, etc)
   const horaMatch = userMessage.match(/(\d{1,2}):?(\d{2})\s*(am|pm)?/i);
   if (horaMatch) {
     let hora = parseInt(horaMatch[1]);
     const minuto = horaMatch[2];
     const ampm = horaMatch[3]?.toLowerCase();
     
-    // Convertir a 24h si es necesario
     if (ampm === 'pm' && hora < 12) hora += 12;
     if (ampm === 'am' && hora === 12) hora = 0;
     
@@ -1101,7 +1169,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
-  // Buscar por fecha (2025-10-24, 24, etc)
   const fechaMatch = userMessage.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2})/);
   if (fechaMatch) {
     const fechaBuscada = fechaMatch[1] || `${ahora.year}-${String(ahora.month).padStart(2, '0')}-${String(fechaMatch[2]).padStart(2, '0')}`;
@@ -1116,7 +1183,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
-  // Si tiene solo 1 cita, preguntar directamente
   if (citasActivas.length === 1) {
     const cita = citasActivas[0];
     state.esperandoConfirmacionCancelacion = true;
@@ -1125,7 +1191,6 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
   }
   
-  // Si tiene múltiples citas, listarlas
   let msg = "Tienes varias citas activas:\n\n";
   citasActivas.forEach((c, i) => {
     msg += `${i+1}. ${c.servicio} - ${c.fecha} a las ${formatearHora(c.hora_inicio)}\n`;
@@ -1413,7 +1478,7 @@ async function comandoConfigReload(fromChatId) {
   }
   
   await cargarConfigBarberia();
-  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🏪 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
+  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🪒 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
 }
 
 async function comandoConfigSet(args, fromChatId) {
@@ -1729,7 +1794,6 @@ async function chatWithAI(userMessage, userId, chatId) {
     const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
     const horaActual = hoy.toFormat('h:mm a');
     
-    // 🔥 NUEVO: Obtener citas del usuario para poder cancelarlas
     const bookings = await readBookings();
     const citasUsuario = bookings.filter(b => 
       b.chatId === chatId && 
@@ -1844,7 +1908,6 @@ ${faqsTxt}
     if (state.mode === 'demo') {
       respuesta = await procesarTags(respuesta, chatId);
       
-      // 🔥 NUEVO: Detectar y crear cita automáticamente si OpenAI no generó el tag
       await detectarYCrearCitaAutomatica(state.conversationHistory, respuesta, chatId);
     }
     
@@ -1885,6 +1948,7 @@ client.on('qr', (qr) => {
   console.log('🌐 Abre este link para escanear:');
   console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
   latestQR = qr;
+  clientStatus = 'qr_ready';
   qrcode.generate(qr, { small: true });
 });
 
@@ -1892,15 +1956,33 @@ client.on('ready', async () => {
   console.log('✅ Cliente de WhatsApp listo!');
   console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
   latestQR = null;
+  clientStatus = 'ready';
   
   await initDataFiles();
   await cargarConfigBarberia();
   await cargarVentasPrompt();
   
-  console.log('📝 Estado de archivos:');
+  console.log('📋 Estado de archivos:');
   console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
   console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
   console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
+});
+
+client.on('authenticated', () => {
+  console.log('✅ Autenticación exitosa!');
+  clientStatus = 'authenticated';
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('❌ Fallo de autenticación:', msg);
+  latestQR = null;
+  clientStatus = 'error';
+});
+
+client.on('disconnected', (r) => { 
+  console.log('❌ Cliente desconectado:', r); 
+  latestQR = null;
+  clientStatus = 'disconnected';
 });
 
 client.on('message', async (message) => {
@@ -1923,13 +2005,13 @@ client.on('message', async (message) => {
           processedMessage = transcript;
           console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
         } else {
-          await humanDelay(); // 🛡️ Anti-ban
+          await humanDelay();
           await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
           return;
         }
       } catch (e) {
         console.error('[Handler Voz] Error:', e);
-        await humanDelay(); // 🛡️ Anti-ban
+        await humanDelay();
         await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
         return;
       }
@@ -1959,20 +2041,18 @@ client.on('message', async (message) => {
       return;
     }
 
-    // 🔥 NUEVO: Intentar manejar cancelación directamente (sin OpenAI)
     const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
     
     if (respuestaCancelacion) {
-      // Se detectó y manejó una cancelación
-      await humanDelay(); // 🛡️ Anti-ban
+      await humanDelay();
       await message.reply(respuestaCancelacion);
-      return; // No pasar a OpenAI
+      return;
     }
 
     const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
     
     if (respuesta) {
-      await humanDelay(); // 🛡️ Anti-ban
+      await humanDelay();
       await message.reply(respuesta);
     }
     
@@ -1989,19 +2069,8 @@ client.on('message', async (message) => {
   }
 });
 
-client.on('disconnected', (r) => { 
-  console.log('❌ Cliente desconectado:', r); 
-  latestQR = null;
-});
-
-client.on('auth_failure', (msg) => {
-  console.error('❌ Fallo de autenticación:', msg);
-  latestQR = null;
-});
-
 // ========== START ==========
 console.log('🚀 Iniciando Cortex AI Bot...');
-// 🔥 DEBUG: Verificar timezone al iniciar
 const ahora = now();
 console.log('🕐 TIMEZONE DEBUG:', {
   timezone: TIMEZONE,
@@ -2013,7 +2082,13 @@ console.log('🕐 TIMEZONE DEBUG:', {
 
 console.log(`📍 Timezone: ${TIMEZONE}`);
 console.log(`👤 Owner: ${OWNER_NUMBER}`);
-client.initialize();
+
+if (initializeWhatsAppClient()) {
+  client.initialize();
+} else {
+  console.error('❌ No se pudo inicializar el cliente de WhatsApp');
+  process.exit(1);
+}
 
 // ========== GLOBAL ERRORS ==========
 process.on('unhandledRejection', (e) => {
@@ -2022,4 +2097,5 @@ process.on('unhandledRejection', (e) => {
 
 process.on('uncaughtException', (e) => {
   console.error('❌ UNCAUGHT EXCEPTION:', e);
+  console.error('Stack:', e.stack);
 });
