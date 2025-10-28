@@ -20,6 +20,7 @@ let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
+const QR_TIMEOUT = 60000; // 60 seconds timeout for QR code generation
 
 // ======== RUTAS DE CARPETAS/ARCHIVOS ========
 const ROOT_DIR = __dirname;
@@ -98,6 +99,7 @@ let latestQR = null;
 let clientStatus = 'initializing';
 let clientInitialized = false;
 let initializationPromise = null;
+let qrGenerationTime = null;
 
 async function initializeWhatsAppClient() {
   if (initializationPromise) {
@@ -1971,14 +1973,14 @@ async function chatWithAI(userMessage, userId, chatId) {
 
 🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
 📅 HOY ES: ${diaSemanaTxt}, ${fechaISO}
-🕐 HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
+🕐 HORA ACTUAL: ${ahora.toFormat('HH:mm')} (formato 24h) = ${ahora.toFormat('h:mm a')}
 
 ⚠️ REGLAS DE HORARIO:
 - Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy"
 - Solo ofrece horarios FUTUROS que no hayan pasado
 - Si un horario ya pasó HOY, NO lo ofrezcas
 
-Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${hoy.toFormat('h:mm a')}.
+Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${ahora.toFormat('h:mm a')}.
 
 **🚨 REGLAS OBLIGATORIAS PARA AGENDAR:**
 1. Pregunta qué servicio necesita
