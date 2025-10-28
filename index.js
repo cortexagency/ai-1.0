@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (Fixed & Complete)
+// CORTEX IA - INDEX.JS (Optimizado y Consolidado)
 // =========================
 require('dotenv').config();
 
@@ -20,7 +20,6 @@ let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
-const QR_TIMEOUT = 60000; // 60 seconds timeout for QR code generation
 
 // ======== RUTAS DE CARPETAS/ARCHIVOS ========
 const ROOT_DIR = __dirname;
@@ -39,545 +38,201 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 // ========== 🛡️ ANTI-BAN: HUMAN-LIKE DELAYS ==========
-const MIN_RESPONSE_DELAY = 2000;
-const MAX_RESPONSE_DELAY = 5000;
+const MIN_RESPONSE_DELAY = 2000; // 2 seconds minimum
+const MAX_RESPONSE_DELAY = 5000; // 5 seconds maximum
 
 function humanDelay() {
   const delay = Math.floor(Math.random() * (MAX_RESPONSE_DELAY - MIN_RESPONSE_DELAY + 1)) + MIN_RESPONSE_DELAY;
-  console.log(`[🕒 ANTI-BAN] Waiting ${(delay/1000).toFixed(1)}s before responding...`);
+  console.log(`[🕐 ANTI-BAN] Waiting ${(delay/1000).toFixed(1)}s before responding...`);
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
 async function sendWithTyping(chat, message) {
   try {
-    await chat.sendStateTyping();
-    await humanDelay();
+    await chat.sendStateTyping(); // Show "typing..."
+    await humanDelay(); // Wait like human typing
     await chat.sendMessage(message);
-    await chat.clearState();
+    await chat.clearState(); // Stop typing indicator
   } catch (error) {
+    // Fallback if typing state fails
     console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
     await humanDelay();
     await chat.sendMessage(message);
   }
 }
 
-// ========== 🔥 CONFIGURACIÓN PUPPETEER MEJORADA ==========
-const PUPPETEER_CONFIG = {
-  headless: 'new',
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-    '--disable-web-security',
-    '--disable-features=site-per-process',
-    '--allow-insecure-localhost',
-    '--window-size=1280,720'
-  ],
-  ignoreHTTPSErrors: true,
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
-};
 
-// console.log('🔧 Puppeteer Config:', {
-//   executablePath: PUPPETEER_CONFIG.executablePath,
-//   env: {
-//     PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
-//     CHROME_BIN: process.env.CHROME_BIN,
-//     CHROMIUM_PATH: process.env.CHROMIUM_PATH
-//   }
-// });
-
-// ========== WHATSAPP CLIENT (CON MANEJO DE ERRORES) ==========
-let client = null;
-let latestQR = null;
-let clientStatus = 'initializing';
-let clientInitialized = false;
-let initializationPromise = null;
-let qrGenerationTime = null;
-
-// ========== CLEANUP FUNCTION FOR STALE LOCKS ==========
-async function cleanupStaleLocks() {
-  try {
-    const sessionDir = path.join(DATA_DIR, 'session', 'session-cortex-ai-bot');
-    const lockFile = path.join(sessionDir, 'SingletonLock');
-    const socketFile = path.join(sessionDir, 'SingletonSocket');
-    
-    // Check and remove SingletonLock
-    try {
-      await fs.access(lockFile);
-      await fs.unlink(lockFile);
-      console.log('🧹 Removed stale SingletonLock file');
-    } catch (err) {
-      // File doesn't exist, which is fine
-    }
-    
-    // Check and remove SingletonSocket
-    try {
-      await fs.access(socketFile);
-      await fs.unlink(socketFile);
-      console.log('🧹 Removed stale SingletonSocket file');
-    } catch (err) {
-      // File doesn't exist, which is fine
-    }
-  } catch (error) {
-    console.log('⚠️ Could not clean lock files:', error.message);
-  }
-}
-
-
-async function initializeWhatsAppClient() {
-  if (initializationPromise) {
-    console.log('⏳ Waiting for existing initialization...');
-    return initializationPromise;
-  }
-
-  initializationPromise = (async () => {
-    try {
-      console.log('🚀 Starting WhatsApp client initialization...');
-      // Clean up any stale lock files before starting
-      await cleanupStaleLocks();
-      clientStatus = 'initializing';
-
-      client = new Client({
-        authStrategy: new LocalAuth({ 
-          dataPath: path.join(DATA_DIR, 'session'),
-          clientId: 'cortex-ai-bot'
-        }),
-        puppeteer: PUPPETEER_CONFIG,
-        qrTimeoutMs: QR_TIMEOUT,
-        authTimeoutMs: 60000,
-        restartOnAuthFail: true,
-        qrMaxRetries: 5
-      });
-
-      // Set up event handlers
-      client.on('qr', (qr) => {
-        console.log('📱 New QR Code received');
-        latestQR = qr;
-        clientStatus = 'qr_ready';
-        qrGenerationTime = Date.now();
-      });
-
-      client.on('ready', () => {
-        console.log('✅ Client ready');
-        clientStatus = 'ready';
-        latestQR = null;
-        clientInitialized = true;
-      });
-
-      client.on('auth_failure', (msg) => {
-        console.error('❌ Auth failure:', msg);
-        clientStatus = 'error';
-        latestQR = null;
-      });
-
-      client.on('disconnected', (reason) => {
-        console.log('❌ Client disconnected:', reason);
-        clientStatus = 'disconnected';
-        clientInitialized = false;
-        latestQR = null;
-        
-        // Auto reconnect after delay
-        setTimeout(() => {
-          console.log('🔄 Attempting reconnection...');
-          initializeWhatsAppClient().catch(console.error);
-        }, 5000);
-      });
-
-      // Initialize with timeout
-      await Promise.race([
-        client.initialize(),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Initialization timeout')), 30000)
-        )
-      ]);
-
-
-      return true;
-    } catch (error) {
-      console.error('❌ Initialization failed:', error);
-      clientStatus = 'error';
-      
-      // Clean up locks on error
-      await cleanupStaleLocks().catch(() => {});
-      
-      throw error;
-    } finally {
-      initializationPromise = null;
-    }
-  })();
-
-  return initializationPromise;
-}
+// ========== WHATSAPP CLIENT ==========
+const client = new Client({
+  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }), 
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu',
+      '--disable-extensions'
+    ]
+  },
+  qrTimeout: 0,
+  authTimeout: 0,
+});
 
 // ========== EXPRESS SERVER ==========
 const app = express();
+let latestQR = null;
 
-app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Cortex AI Bot Status</title>
-      <meta http-equiv="refresh" content="5">
-      <style>
-        body {
-          font-family: monospace;
-          background: #0a0a0a;
-          color: #00ff00;
-          padding: 20px;
-          text-align: center;
-        }
-        .status {
-          font-size: 24px;
-          margin: 20px;
-          padding: 20px;
-          border: 2px solid #00ff00;
-          border-radius: 10px;
-          display: inline-block;
-        }
-        .error { border-color: #ff0000; color: #ff0000; }
-        .warning { border-color: #ffaa00; color: #ffaa00; }
-      </style>
-    </head>
-    <body>
-      <h1>🤖 CORTEX AI BOT</h1>
-      <div class="status ${clientStatus === 'error' ? 'error' : clientStatus === 'ready' ? '' : 'warning'}">
-        Status: ${clientStatus.toUpperCase()}
-      </div>
-      <p>🌐 <a href="/qr" style="color: #00ff00;">Ver QR Code</a></p>
-      <p><small>Actualiza automáticamente cada 5 segundos</small></p>
-    </body>
-    </html>
-  `);
-});
+app.get('/', (req, res) => res.send('✅ Cortex AI Bot is running! 🤖'));
 
-// Update the QR endpoint with better error handling
 app.get('/qr', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-cache');
+  if (!latestQR) {
+    return res.send(`
+      <!DOCTYPE html><html><head>
+        <title>Cortex AI Bot - QR Code</title>
+        <meta http-equiv="refresh" content="3">
+        <style>
+          body {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            text-align: center;
+            padding: 20px;
+          }
+        </style>
+      </head><body>
+        <div>
+          <h2>⏳ Generando código QR...</h2>
+          <p>El bot está iniciando. La página se actualizará automáticamente.</p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  try {
+    const qrSVG = await QRCode.toString(latestQR, { 
+      type: 'svg', 
+      width: 400, 
+      margin: 2, 
+      color: { dark: '#000', light: '#fff' } 
+    });
     
-    try {
-        // Check if client is initializing
-        if (clientStatus === 'initializing') {
-            return res.send(`
-                <!DOCTYPE html><html><head>
-                    <title>Iniciando...</title>
-                    <meta http-equiv="refresh" content="5">
-                    <style>
-                        body { 
-                            font-family: monospace;
-                            background: #000;
-                            color: #0f0;
-                            text-align: center;
-                            padding: 20px;
-                        }
-                    </style>
-                </head><body>
-                    <h2>⏳ Iniciando cliente...</h2>
-                    <p>Por favor espera...</p>
-                    <p>Actualizando en 5 segundos...</p>
-                </body></html>
-            `);
-        }
-
-        // Try to initialize if not ready
-        if (!clientInitialized) {
-            try {
-                await initializeWhatsAppClient();
-            } catch (error) {
-                console.error('Failed to initialize client:', error);
-                return res.status(500).send(`
-                    <!DOCTYPE html><html><head>
-                        <title>Error</title>
-                        <meta http-equiv="refresh" content="5">
-                        <style>
-                            body { 
-                                font-family: monospace;
-                                background: #000;
-                                color: #ff0000;
-                                text-align: center;
-                                padding: 20px;
-                            }
-                        </style>
-                    </head><body>
-                        <h2>❌ Error de inicialización</h2>
-                        <p>${error.message}</p>
-                        <p>Reintentando en 5 segundos...</p>
-                    </body></html>
-                `);
-            }
-        }
-
-        // Check QR timeout
-        if (qrGenerationTime && Date.now() - qrGenerationTime > QR_TIMEOUT) {
-            latestQR = null;
-            clientStatus = 'timeout';
-            // Try to reinitialize
-            initializeWhatsAppClient().catch(console.error);
-        }
-
-        if (!latestQR || clientStatus === 'ready' || clientStatus === 'error' || clientStatus === 'timeout') {
-            const status = {
-                ready: '✅ Cliente conectado',
-                error: '❌ Error de conexión - Reintentando...',
-                timeout: '⏰ QR expirado - Generando nuevo...',
-                initializing: '⏳ Iniciando cliente...',
-                disconnected: '🔌 Desconectado - Reconectando...'
-            }[clientStatus] || '⏳ Generando QR...';
-
-            return res.send(`
-                <!DOCTYPE html><html><head>
-                    <title>Cortex AI Bot - Estado</title>
-                    <meta http-equiv="refresh" content="5">
-                    <style>
-                        body { 
-                            font-family: monospace; 
-                            background: #000; 
-                            color: #0f0; 
-                            display: flex;
-                            justify-content: center;
-                            align-items: center;
-                            min-height: 100vh;
-                            margin: 0;
-                            padding: 20px;
-                            text-align: center;
-                        }
-                        .status-box {
-                            background: rgba(0,255,0,0.1);
-                            padding: 20px 40px;
-                            border-radius: 10px;
-                            border: 1px solid #0f0;
-                            max-width: 500px;
-                        }
-                        .error { color: #ff0000; border-color: #ff0000; background: rgba(255,0,0,0.1); }
-                        .warning { color: #ffaa00; border-color: #ffaa00; background: rgba(255,170,0,0.1); }
-                        .retry-btn {
-                            background: #1a1a1a;
-                            color: #0f0;
-                            border: 1px solid #0f0;
-                            padding: 10px 20px;
-                            border-radius: 5px;
-                            cursor: pointer;
-                            margin-top: 15px;
-                        }
-                        .retry-btn:hover { background: #2a2a2a; }
-                    </style>
-                </head><body>
-                    <div class="status-box ${clientStatus === 'error' ? 'error' : clientStatus === 'timeout' ? 'warning' : ''}">
-                        <h2>${status}</h2>
-                        <p>Estado: ${clientStatus}</p>
-                        <p>Última actualización: ${new Date().toLocaleTimeString()}</p>
-                        ${clientStatus === 'error' || clientStatus === 'timeout' ? 
-                            '<button class="retry-btn" onclick="window.location.reload()">Reintentar</button>' : 
-                            '<p>Actualizando automáticamente...</p>'}
-                    </div>
-                </body>
-            </html>
-            `);
-        }
-
-        const qrSVG = await QRCode.toString(latestQR, { 
-            type: 'svg',
-            width: 400,
-            margin: 4,
-            color: {
-                dark: '#000',
-                light: '#fff'
-            }
-        });
-
-        // Return the QR code page
-        return res.send(`
-            <!DOCTYPE html><html><head>
-                <title>Cortex AI Bot - Escanea QR</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <meta http-equiv="refresh" content="60">
-                <style>
-                    body {
-                        font-family: system-ui, -apple-system, sans-serif;
-                        background: #1a1a1a;
-                        color: #fff;
-                        margin: 0;
-                        padding: 20px;
-                        min-height: 100vh;
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        text-align: center;
-                    }
-                    .container { max-width: 500px; }
-                    h1 { color: #00ff00; margin-bottom: 30px; }
-                    .qr-box {
-                        background: white;
-                        padding: 20px;
-                        border-radius: 15px;
-                        display: inline-block;
-                        margin: 20px auto;
-                        box-shadow: 0 0 50px rgba(0,255,0,0.2);
-                    }
-                    .instructions {
-                        background: rgba(255,255,255,0.1);
-                        padding: 20px;
-                        border-radius: 10px;
-                        margin: 20px 0;
-                        text-align: left;
-                    }
-                    .warning {
-                        background: rgba(255,180,0,0.2);
-                        border-left: 4px solid #ffb400;
-                        padding: 15px;
-                        margin-top: 15px;
-                        text-align: left;
-                    }
-                </style>
-            </head><body>
-                <div class="container">
-                    <h1>📱 CORTEX AI BOT</h1>
-                    <div class="qr-box">${qrSVG}</div>
-                    <div class="instructions">
-                        <strong>📋 Para conectar:</strong>
-                        <ol>
-                            <li>Abre WhatsApp en tu celular</li>
-                            <li>Toca Menú (⋮) → Dispositivos vinculados</li>
-                            <li>Selecciona "Vincular dispositivo"</li>
-                            <li>Apunta la cámara al código QR</li>
-                        </ol>
-                    </div>
-                    <div class="warning">
-                        <strong>⚠️ Importante:</strong><br>
-                        Este código QR expira en 60 segundos.<br>
-                        Si expira, refresca la página para generar uno nuevo.
-                    </div>
-                </div>
-            </body></html>
-        `);
-
-    } catch (error) {
-        console.error('Error en /qr:', error);
-        return res.status(500).send(`
-            <!DOCTYPE html><html><head>
-                <title>Error</title>
-                <meta http-equiv="refresh" content="5">
-                <style>
-                    body { 
-                        font-family: monospace; 
-                        background: #000; 
-                        color: #ff0000; 
-                        padding: 20px; 
-                        text-align: center;
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        min-height: 100vh;
-                        margin: 0;
-                    }
-                    .error-box {
-                        background: rgba(255,0,0,0.1);
-                        padding: 20px;
-                        border-radius: 10px;
-                        border: 1px solid #ff0000;
-                        max-width: 500px;
-                    }
-                    a { color: #00ff00; }
-                </style>
-            </head><body>
-                <div class="error-box">
-                    <h1>❌ Error</h1>
-                    <p>${error.message}</p>
-                    <p>Reintentando en 5 segundos...</p>
-                    <p><a href="/qr">Reintentar ahora</a></p>
-                </div>
-            </body></html>
-        `);
-    }
-});
-
-app.get('/health', (req, res) => {
-  res.json({
-    status: clientStatus,
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage()
-  });
-});
-
-app.listen(PORT, async () => {
-  console.log(`✅ HTTP server running on port ${PORT}`);
-  try {
-    await initializeWhatsAppClient();
+    res.send(`
+      <!DOCTYPE html><html><head>
+        <title>Cortex AI Bot - Escanea QR</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+          }
+          .container { text-align: center; max-width: 500px; }
+          h1 { color: #00ff00; margin-bottom: 20px; font-size: 24px; }
+          .qr-box {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            display: inline-block;
+            margin: 20px 0;
+            box-shadow: 0 10px 40px rgba(0, 255, 0, 0.3);
+          }
+          .instructions {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            text-align: left;
+            line-height: 1.8;
+          }
+          .instructions ol { padding-left: 20px; }
+          .warning {
+            background: rgba(255, 100, 0, 0.2);
+            border-left: 4px solid #ff6400;
+            padding: 15px;
+            margin-top: 15px;
+            border-radius: 5px;
+            text-align: left;
+          }
+        </style>
+      </head><body>
+        <div class="container">
+          <h1>📱 CORTEX AI BOT</h1>
+          <div class="qr-box">${qrSVG}</div>
+          <div class="instructions">
+            <strong>📋 Pasos para vincular:</strong>
+            <ol>
+              <li>Abre <strong>WhatsApp</strong> en tu celular</li>
+              <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
+              <li>Toca <strong>"Vincular un dispositivo"</strong></li>
+              <li><strong>Escanea este QR</strong> directamente desde WhatsApp</li>
+            </ol>
+          </div>
+          <div class="warning">
+            <strong>⚠️ Si no funciona:</strong><br>
+            Usa la app de <strong>Cámara</strong> de tu celular, apunta a la pantalla y abre el link que aparece
+          </div>
+        </div>
+      </body></html>
+    `);
   } catch (error) {
-    console.error('❌ Initial client initialization failed:', error);
+    console.error('Error generando QR:', error);
+    res.status(500).send(`
+      <html><head><title>Error</title>
+      <style>body {font-family: monospace; background: #000; color: #f00; padding: 20px; text-align: center;}</style>
+      </head><body>
+        <h1>❌ Error generando QR</h1>
+        <p>${error.message}</p>
+        <p><a href="/qr" style="color: #0f0;">Reintentar</a></p>
+      </body></html>
+    `);
   }
 });
 
-// ========== HELPERS FS (CON MEJOR MANEJO DE ERRORES) ==========
-async function ensureDir(p) {
-  try {
-    await fs.access(p);
-  } catch {
-    await fs.mkdir(p, { recursive: true });
-    console.log(`✅ Directorio creado: ${p}`);
-  }
+app.listen(PORT, () => {
+  console.log(`✅ HTTP server running on port ${PORT}`);
+  console.log(`🌐 Accede al QR en: https://ai-10-production.up.railway.app/qr`);
+});
+
+// ========== HELPERS FS ==========
+async function ensureDir(p) { 
+  if (!fssync.existsSync(p)) fssync.mkdirSync(p, { recursive: true }); 
 }
 
 async function initDataFiles() {
   try {
     await ensureDir(DATA_DIR);
     await ensureDir(PROMPTS_DIR);
-    await ensureDir(path.join(DATA_DIR, 'session'));
-    
-    await new Promise(resolve => setTimeout(resolve, 100));
     
     for (const [file, def] of [
       [BOOKINGS_FILE, []],
       [RESERVAS_FILE, {}],
       [SCHEDULED_MESSAGES_FILE, []]
     ]) {
-      try {
-        await fs.access(file);
-        const content = await fs.readFile(file, 'utf8');
-        JSON.parse(content);
-        console.log(`✅ Archivo válido: ${path.basename(file)}`);
-      } catch {
-        await fs.writeFile(file, JSON.stringify(def, null, 2));
-        console.log(`✅ Creado: ${path.basename(file)}`);
+      try { await fs.access(file); } 
+      catch { 
+        await fs.writeFile(file, JSON.stringify(def, null, 2)); 
+        console.log(`✅ Creado: ${path.basename(file)}`); 
       }
     }
-
-    if (!fssync.existsSync(BARBERIA_BASE_PATH)) {
-      const defaultBarberiaConfig = {
-        servicios: {
-          "corte clásico": { precio: 25000, min: 40, emoji: "✂️" },
-          "barba": { precio: 20000, min: 30, emoji: "🧔" }
-        },
-        horario: { lun_vie: "9:00-20:00", sab: "9:00-20:00", dom: "Cerrado" },
-        negocio: { nombre: "Barbería Demo", direccion: "Calle Principal #123", telefono: "300-123-4567" },
-        pagos: ["Efectivo", "Nequi", "Bancolombia"],
-        faqs: [],
-        upsell: "",
-        system_prompt: "Eres el asistente de una barbería. Agenda citas de forma eficiente."
-      };
-      await fs.writeFile(BARBERIA_BASE_PATH, JSON.stringify(defaultBarberiaConfig, null, 2));
-      console.log('✅ Creado barberia_base.txt con configuración por defecto');
-    }
-
-    if (!fssync.existsSync(VENTAS_PROMPT_PATH)) {
-      await fs.writeFile(VENTAS_PROMPT_PATH, 'Eres Cortex IA, asistente de ventas. Guía a los usuarios a probar /start test.');
-      console.log('✅ Creado ventas.txt con prompt por defecto');
-    }
-
-    console.log('✅ Todos los archivos de datos inicializados correctamente');
   } catch (error) {
-    console.error('❌ Error CRÍTICO inicializando archivos:', error);
-    throw error;
+    console.error('❌ Error inicializando archivos:', error);
   }
 }
 
@@ -796,10 +451,12 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   
+  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
   const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
   
   let minutoActual = minutoInicio;
   if (esHoy) {
+    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
     const minAhora = ahora.hour * 60 + ahora.minute + 1;
     const proximoSlot = Math.ceil(minAhora / 20) * 20;
     minutoActual = Math.max(minutoInicio, proximoSlot);
@@ -822,6 +479,7 @@ async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
   return alternativas;
 }
 
+// 🔥 FUNCIÓN CORREGIDA: Genera slots disponibles HOY (sin horas pasadas)
 async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const reservas = await readReservas();
   const slotsReservados = reservas[fecha] || [];
@@ -854,11 +512,15 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   const ahora = now();
   const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
   
+  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
   const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
   
   let minutoBusqueda = minutoInicio;
   if (esHoy) {
-    const minAhora = ahora.hour * 60 + ahora.minute + 1;
+    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
+    // Esto evita ofrecer 4:00 PM a las 4:00 PM en punto (ofrecerá 4:20 PM)
+    // Y evita ofrecer 4:00 PM a las 4:32 PM (ofrecerá 4:40 PM)
+    const minAhora = ahora.hour * 60 + ahora.minute + 1; // +1 min buffer
     const proximoSlot = Math.ceil(minAhora / 20) * 20;
     minutoBusqueda = Math.max(minutoInicio, proximoSlot);
     
@@ -867,9 +529,11 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
   
   const alternativas = [];
   
+  // Buscar slots disponibles
   for (let m = minutoBusqueda; m <= minutoFin - duracionMinDefault; m += 20) {
     const horaStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
     
+    // Verificar disponibilidad del slot
     const slotsNecesarios = calcularSlotsUsados(horaStr, duracionMinDefault);
     let colision = false;
     
@@ -878,6 +542,7 @@ async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
         colision = true;
         break;
       }
+      // Verificar que no se pase del cierre
       const [slotH, slotM] = slot.split(':').map(Number);
       if (slotH * 60 + slotM > minutoFin) {
         colision = true;
@@ -904,13 +569,15 @@ async function procesarTags(mensaje, chatId) {
 
   if (bookingMatch) {
     try {
+    
       const bookingData = JSON.parse(bookingMatch[1]);
     
-      const [h, m] = bookingData.hora_inicio.split(':').map(Number);
-      if (h < 9 || h >= 20) {
-        console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
-        return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
-      }
+    // 🔥 VALIDAR HORA (9 AM - 8 PM)
+    const [h, m] = bookingData.hora_inicio.split(':').map(Number);
+    if (h < 9 || h >= 20) {
+      console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
+      return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
+    }
       
       const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
       const check = await verificarDisponibilidad(
@@ -925,7 +592,7 @@ async function procesarTags(mensaje, chatId) {
         let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
         
         if (alternativas.length > 0) {
-          respuesta += '\n\n🕐 *Horarios disponibles:*\n';
+          respuesta += '\n\n🕒 *Horarios disponibles:*\n';
           alternativas.forEach((h, i) => {
             respuesta += `${i + 1}. ${formatearHora(h)}\n`;
           });
@@ -988,6 +655,7 @@ async function procesarTags(mensaje, chatId) {
       const bookings = await readBookings();
       console.log('[🔥 CANCELACIÓN] Total de citas en sistema:', bookings.length);
       
+      // 🔥 BÚSQUEDA MEJORADA: Sin normalización agresiva
       let b = null;
       
       if (cancelData.id) {
@@ -1003,6 +671,7 @@ async function procesarTags(mensaje, chatId) {
           
           const nombreCitaLower = x.nombreCliente.toLowerCase().trim();
           
+          // Match más flexible: contiene o es contenido
           const matchNombre = nombreCitaLower.includes(nombreLower) || nombreLower.includes(nombreCitaLower);
           const matchFecha = x.fecha === cancelData.fecha;
           const matchHora = x.hora_inicio === cancelData.hora_inicio;
@@ -1024,6 +693,7 @@ async function procesarTags(mensaje, chatId) {
         b.status = 'cancelled';
         await writeBookings(bookings);
         
+        // Liberar slots
         const reservas = await readReservas();
         if (reservas[b.fecha]) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
@@ -1034,6 +704,7 @@ async function procesarTags(mensaje, chatId) {
           await writeReservas(reservas);
         }
         
+        // 🔥 NOTIFICAR AL DUEÑO (SIEMPRE, se filtra dentro de notificarDueno)
         console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
         const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
         await notificarDueno(textoNotificacion, chatId);
@@ -1055,6 +726,7 @@ async function procesarTags(mensaje, chatId) {
 // ========== NOTIFICAR AL DUEÑO (VERSION CORREGIDA) ==========
 async function notificarDueno(txt, fromChatId = null) {
   try {
+    // 🔥 VALIDACIÓN CRÍTICA 1: Verificar que el cliente esté inicializado
     if (!client || !client.info) {
       console.error('[❌ NOTIFICACIÓN] Cliente de WhatsApp NO está listo todavía');
       console.error('[❌ NOTIFICACIÓN] client existe:', !!client);
@@ -1062,6 +734,7 @@ async function notificarDueno(txt, fromChatId = null) {
       return;
     }
     
+    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
     if (fromChatId === OWNER_CHAT_ID) {
       console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
       return;
@@ -1073,6 +746,7 @@ async function notificarDueno(txt, fromChatId = null) {
     console.log(`[📤 NOTIFICACIÓN] Origen: ${fromChatId || 'sistema'}`);
     console.log(`[📤 NOTIFICACIÓN] Cliente listo: ${!!client?.info}`);
     
+    // 🔥 ENVÍO CON TIMEOUT de 15 segundos
     const sendPromise = client.sendMessage(OWNER_CHAT_ID, txt);
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Timeout: no respuesta en 15s')), 15000)
@@ -1084,7 +758,7 @@ async function notificarDueno(txt, fromChatId = null) {
     console.log(`[✅ NOTIFICACIÓN] ===================`);
   }
   catch (e) { 
-    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
     console.error('[❌ NOTIFICACIÓN] FALLÓ EL ENVÍO');
     console.error('[❌ NOTIFICACIÓN] Error:', e.message);
     console.error('[❌ NOTIFICACIÓN] Tipo error:', e.constructor.name);
@@ -1097,13 +771,14 @@ async function notificarDueno(txt, fromChatId = null) {
       pupBrowser: !!client?.pupBrowser,
       authenticated: client?.info?.wid !== undefined
     });
-    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
   }
 }
 
 // ========== DETECCIÓN AUTOMÁTICA DE CITAS (POST-OPENAI) ==========
 async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, chatId) {
   try {
+    // Solo intentar si la respuesta de OpenAI sugiere confirmación de cita
     const respLower = lastResponse.toLowerCase();
     const esConfirmacion = respLower.includes('agend') || respLower.includes('confirm') || 
                           respLower.includes('reserv') || respLower.includes('listo') ||
@@ -1113,6 +788,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     console.log('[🔍 AUTO-CITA] Analizando conversación para extraer datos...');
     
+    // Analizar últimos 10 mensajes
     const ultimos = conversationHistory.slice(-10);
     
     let servicio = null;
@@ -1126,6 +802,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     for (const msg of ultimos) {
       const texto = (msg.content || '').toLowerCase();
       
+      // Buscar servicio
       if (!servicio) {
         for (const srv of serviciosValidos) {
           if (texto.includes(srv.toLowerCase()) || 
@@ -1137,6 +814,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
+      // Buscar hora (formato flexible: 9am, 9:00, 15:00, etc)
       if (!hora) {
         const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
         if (horaMatch) {
@@ -1144,9 +822,11 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
           const m = horaMatch[2] || '00';
           const ampm = horaMatch[3]?.toLowerCase();
           
+          // Convertir a 24h
           if (ampm === 'pm' && h < 12) h += 12;
           if (ampm === 'am' && h === 12) h = 0;
           
+          // Validar horario (9 AM a 8 PM)
           if (h >= 9 && h < 20) {
             hora = `${String(h).padStart(2, '0')}:${m}`;
             console.log('[🔍 AUTO-CITA] Hora encontrada:', hora);
@@ -1154,6 +834,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
+      // Buscar fecha (palabras clave)
       if (!fecha) {
         if (texto.includes('mañana') || texto.includes('tomorrow')) {
           fecha = ahora.plus({ days: 1 }).toFormat('yyyy-MM-dd');
@@ -1167,18 +848,22 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
         }
       }
       
+      // Buscar nombre (solo en mensajes del usuario)
       if (!nombre && msg.role === 'user') {
+        // Intentar extraer nombre después de palabras clave
         const nombreMatch = texto.match(/(?:soy|nombre|llamo|me llamo)\s+([a-záéíóúñ\s]{2,30})/i);
         if (nombreMatch) {
           nombre = nombreMatch[1].trim();
+          // Capitalizar primera letra
           nombre = nombre.split(' ').map(p => 
             p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
           ).join(' ');
           console.log('[🔍 AUTO-CITA] Nombre encontrado:', nombre);
         } else {
+          // Buscar palabras capitalizadas
           const palabras = msg.content.split(/\s+/);
           for (const palabra of palabras) {
-            if (/^[A-ZÁÉÍÓÚÑ'][a-záéíóúñ]{2,}$/.test(palabra) && 
+            if (/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}$/.test(palabra) && 
                 palabra.length > 2 && 
                 !['Para', 'Quiero', 'Hola', 'Buenos', 'Días'].includes(palabra)) {
               nombre = palabra;
@@ -1190,11 +875,13 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
       }
     }
     
+    // Verificar si tenemos todos los datos
     if (!servicio || !fecha || !hora || !nombre) {
       console.log('[🔍 AUTO-CITA] Datos incompletos:', { servicio, fecha, hora, nombre });
       return;
     }
     
+    // Verificar si ya existe una cita similar (evitar duplicados)
     const bookings = await readBookings();
     const citaExistente = bookings.find(b => 
       b.chatId === chatId && 
@@ -1210,13 +897,16 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     console.log('[🔥 AUTO-CITA] ¡Todos los datos completos! Creando cita...');
     
+    // Verificar disponibilidad
     const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
+    // ======= CAMBIO APLICADO AQUÍ =======
     const check = await verificarDisponibilidad(fecha, hora, duracionMin);
     if (!check.disponible) {
       console.log('[❌ AUTO-CITA] Horario no disponible');
       return;
     }
     
+    // Crear la cita
     const bookingData = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
       chatId,
@@ -1231,17 +921,20 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     bookings.push(bookingData);
     await writeBookings(bookings);
     
+    // Reservar slots
     const reservas = await readReservas();
     const slotsOcupados = calcularSlotsUsados(hora, duracionMin);
     if (!reservas[fecha]) reservas[fecha] = [];
     reservas[fecha].push(...slotsOcupados);
     await writeReservas(reservas);
     
+    // Programar mensajes
     await programarConfirmacion(bookingData);
     await programarRecordatorio(bookingData);
     await programarResena(bookingData);
     await programarExtranamos(bookingData);
     
+    // 🔥 NOTIFICAR AL DUEÑO
     console.log('[🔥 AUTO-CITA] Notificando al dueño...');
     await notificarDueno(
       `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n🔧 ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
@@ -1260,6 +953,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   const msgLower = userMessage.toLowerCase().trim();
   const state = getUserState(chatId);
   
+  // 🔥 CASO 1: Si está esperando confirmación de cancelación
   if (state.esperandoConfirmacionCancelacion && state.citaParaCancelar) {
     const confirma = msgLower === 'si' || msgLower === 'sí' || 
                      msgLower === 'confirmo' || msgLower === 'dale' ||
@@ -1271,6 +965,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     if (confirma) {
       const cita = state.citaParaCancelar;
       
+      // Cancelar la cita
       const bookings = await readBookings();
       const citaIndex = bookings.findIndex(b => b.id === cita.id);
       if (citaIndex !== -1) {
@@ -1279,6 +974,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
         
         console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada:', cita.id);
         
+        // Liberar slots
         const reservas = await readReservas();
         if (reservas[cita.fecha]) {
           const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
@@ -1288,7 +984,8 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
           console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
         }
         
-        console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
+        // Notificar al dueño
+        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
           chatId
@@ -1307,7 +1004,9 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
+  // 🔥 CASO 2: Si tiene lista de citas y responde con número
   if (state.citasParaCancelar && state.citasParaCancelar.length > 0) {
+    // Intentar extraer número del mensaje
     const numeroMatch = userMessage.match(/\b(\d+)\b/);
     
     if (numeroMatch) {
@@ -1317,6 +1016,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
       if (numero >= 1 && numero <= state.citasParaCancelar.length) {
         const cita = state.citasParaCancelar[numero - 1];
         
+        // Preguntar confirmación
         state.esperandoConfirmacionCancelacion = true;
         state.citaParaCancelar = cita;
         state.citasParaCancelar = null;
@@ -1328,9 +1028,11 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
       }
     }
     
+    // Si no es número, limpiar estado y continuar
     state.citasParaCancelar = null;
   }
   
+  // 🔥 CASO 3: Detectar palabras de cancelación
   const palabrasCancelacion = [
     'cancelar',
     'cancela',
@@ -1345,17 +1047,19 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
   const esCancelacion = palabrasCancelacion.some(p => msgLower.includes(p));
   
   if (!esCancelacion) {
-    return null;
+    return null; // No es cancelación, continuar normal
   }
   
   console.log('[🔥 CANCELACIÓN DIRECTA] Detectada palabra de cancelación');
   
+  // Buscar citas activas del usuario
   const bookings = await readBookings();
   const ahora = now();
   
   const citasActivas = bookings.filter(b => {
     if (b.chatId !== chatId || b.status === 'cancelled') return false;
     
+    // Filtrar citas pasadas
     const [year, month, day] = b.fecha.split('-').map(Number);
     const [hour, minute] = b.hora_inicio.split(':').map(Number);
     const fechaHoraCita = DateTime.fromObject(
@@ -1372,12 +1076,17 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     return "No encontré ninguna cita activa futura para cancelar. ¿Necesitas ayuda con algo más?";
   }
   
+  // 🔥 CASO 4: Intentar detectar fecha/hora específica en el mensaje
+  // Ejemplo: "cancelar cita del 24" o "cancelar cita de mañana" o "cancelar la de 7:20 PM"
+  
+  // Buscar por hora (7:20, 19:20, etc)
   const horaMatch = userMessage.match(/(\d{1,2}):?(\d{2})\s*(am|pm)?/i);
   if (horaMatch) {
     let hora = parseInt(horaMatch[1]);
     const minuto = horaMatch[2];
     const ampm = horaMatch[3]?.toLowerCase();
     
+    // Convertir a 24h si es necesario
     if (ampm === 'pm' && hora < 12) hora += 12;
     if (ampm === 'am' && hora === 12) hora = 0;
     
@@ -1392,6 +1101,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
+  // Buscar por fecha (2025-10-24, 24, etc)
   const fechaMatch = userMessage.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2})/);
   if (fechaMatch) {
     const fechaBuscada = fechaMatch[1] || `${ahora.year}-${String(ahora.month).padStart(2, '0')}-${String(fechaMatch[2]).padStart(2, '0')}`;
@@ -1406,6 +1116,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     }
   }
   
+  // Si tiene solo 1 cita, preguntar directamente
   if (citasActivas.length === 1) {
     const cita = citasActivas[0];
     state.esperandoConfirmacionCancelacion = true;
@@ -1414,6 +1125,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
     return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
   }
   
+  // Si tiene múltiples citas, listarlas
   let msg = "Tienes varias citas activas:\n\n";
   citasActivas.forEach((c, i) => {
     msg += `${i+1}. ${c.servicio} - ${c.fecha} a las ${formatearHora(c.hora_inicio)}\n`;
@@ -1701,7 +1413,7 @@ async function comandoConfigReload(fromChatId) {
   }
   
   await cargarConfigBarberia();
-  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🪒 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
+  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🏪 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
 }
 
 async function comandoConfigSet(args, fromChatId) {
@@ -1908,6 +1620,7 @@ async function transcribeVoiceFromMsg(msg) {
 // ========== CHAT CORE ==========
 async function chatWithAI(userMessage, userId, chatId) {
   const state = getUserState(userId);
+
   const msgLower = userMessage.toLowerCase();
   
   if (msgLower.includes('/ayuda') || msgLower.includes('/help')) {
@@ -1973,51 +1686,76 @@ async function chatWithAI(userMessage, userId, chatId) {
   if (msgLower.includes('/end test')) { 
     state.mode = 'sales'; 
     state.conversationHistory = []; 
-    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).'; 
+    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?'; 
   }
 
-  // Get current date/time info
-  const ahora = now();
-  const diaSemanaTxt = ahora.setLocale('es').toFormat('EEEE');
-  const fechaISO = ahora.toFormat('yyyy-MM-dd');
-  const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
-
-  // Generate service text
-  const serviciosTxt = generarTextoServicios();
-  const faqsTxt = generarTextoFAQs();
-  const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
-  const upsell = BARBERIA_CONFIG?.upsell || '';
+  const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
+  const esEmergencia = palabrasEmergencia.some(p => msgLower.includes(p));
   
-  // Get schedule text
-  const horarioLv = BARBERIA_CONFIG?.horario?.lun_vie || ''; 
-  const horarioS = BARBERIA_CONFIG?.horario?.sab || ''; 
-  const horarioD = BARBERIA_CONFIG?.horario?.dom || '';
-  
-  const horarioHoy = (
-    diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS : 
-    diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : 
-    horarioLv
-  ) || 'Cerrado';
-
-  // Get available slots
-  const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO);
+  if (esEmergencia) {
+    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`, chatId);
+  }
 
   let systemPrompt = '';
   
   if (state.mode === 'demo') {
-    // Generate demo system prompt
-    systemPrompt = `Eres un asistente virtual para una barbería. Tu tarea es ayudar a los clientes a agendar citas, responder preguntas y brindar información sobre los servicios. Usa un tono amable, profesional y eficiente. Si no estás seguro sobre algo, es mejor pedir aclaraciones. Nunca asumas información. Siempre pregunta si algo no está claro.
-
-🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
+    const hoy = now(); 
+    const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
+    const fechaISO = hoy.toFormat('yyyy-MM-dd');
+    
+    const duracionDefault = 40;
+    const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
+    
+    const horario = BARBERIA_CONFIG?.horario || {}; 
+    const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
+    const direccion = BARBERIA_CONFIG?.negocio?.direccion || ''; 
+    const telefono = BARBERIA_CONFIG?.negocio?.telefono || '';
+    
+    const serviciosTxt = generarTextoServicios(); 
+    const faqsTxt = generarTextoFAQs(); 
+    const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
+    const upsell = BARBERIA_CONFIG?.upsell || ''; 
+    
+    const horarioLv = horario.lun_vie || ''; 
+    const horarioS = horario.sab || ''; 
+    const horarioD = horario.dom || '';
+    
+    const horarioHoy = (
+      diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS : 
+      diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : 
+      horarioLv
+    ) || 'Cerrado';
+    
+    const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
+    const horaActual = hoy.toFormat('h:mm a');
+    
+    // 🔥 NUEVO: Obtener citas del usuario para poder cancelarlas
+    const bookings = await readBookings();
+    const citasUsuario = bookings.filter(b => 
+      b.chatId === chatId && 
+      b.status !== 'cancelled'
+    );
+    
+    let citasUsuarioTxt = '';
+    if (citasUsuario.length > 0) {
+      citasUsuarioTxt = '\n\n**📋 TUS CITAS ACTUALES:**\n';
+      citasUsuario.forEach((cita, i) => {
+        citasUsuarioTxt += `${i+1}. ${cita.nombreCliente} - ${cita.servicio} - ${cita.fecha} a las ${cita.hora_inicio}\n`;
+      });
+      citasUsuarioTxt += '\n*Si el cliente quiere cancelar, usa estos datos EXACTOS en el tag <CANCELLED:...>*\n';
+    }
+    
+    const fallback = `🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
 📅 HOY ES: ${diaSemanaTxt}, ${fechaISO}
-🕐 HORA ACTUAL: ${ahora.toFormat('HH:mm')} (formato 24h) = ${ahora.toFormat('h:mm a')}
+🕐 HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
 
 ⚠️ REGLAS DE HORARIO:
 - Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy"
 - Solo ofrece horarios FUTUROS que no hayan pasado
 - Si un horario ya pasó HOY, NO lo ofrezcas
 
-Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${ahora.toFormat('h:mm a')}.
+Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
+${citasUsuarioTxt}
 
 **🚨 REGLAS OBLIGATORIAS PARA AGENDAR:**
 1. Pregunta qué servicio necesita
@@ -2038,90 +1776,250 @@ Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano pais
    <CANCELLED:{"nombreCliente":"(nombre EXACTO de la cita)","fecha":"YYYY-MM-DD","hora_inicio":"HH:MM"}>
 3. **CRÍTICO:** Debes emitir el tag <CANCELLED:...> EN LA MISMA RESPUESTA donde confirmas la cancelación
 4. **FORMATO OBLIGATORIO:** fecha="YYYY-MM-DD" y hora_inicio="HH:MM" en formato 24h
-5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)`;
+5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)
+
+**EJEMPLO CORRECTO DE CANCELACIÓN:**
+User: "quiero cancelar mi cita"
+Bot: "Claro, ¿me confirmas que quieres cancelar la cita del 2025-10-24 a las 11:00 AM?"
+User: "sí"
+Bot: "Listo, tu cita ha sido cancelada. <CANCELLED:{"nombreCliente":"Zapata el duende","fecha":"2025-10-24","hora_inicio":"11:00"}>"
+
+**⏰ HORARIOS DISPONIBLES HOY:**
+${slotsDisponiblesHoyTxt}
+
+---
+**Info:**
+Horario de hoy: ${horarioHoy}
+**Servicios:**
+${serviciosTxt}
+**Dirección:** ${direccion}
+**Pagos:** ${pagosTxt}
+**FAQs:**
+${faqsTxt}
+**Upsell:** ${upsell}`;
+    
+    systemPrompt = (plantilla || fallback)
+      .replace(/{hoy}/g, fechaISO)
+      .replace(/{horaActual}/g, horaActual)
+      .replace(/{diaSemana}/g, diaSemanaTxt)
+      .replace(/{nombreBarberia}/g, nombreBarberia)
+      .replace(/{direccionBarberia}/g, direccion)
+      .replace(/{telefonoBarberia}/g, telefono)
+      .replace(/{horarioLv}/g, horarioLv)
+      .replace(/{horarioS}/g, horarioS)
+      .replace(/{horarioD}/g, horarioD)
+      .replace(/{horarioHoy}/g, horarioHoy)
+      .replace(/{serviciosTxt}/g, serviciosTxt)
+      .replace(/{faqsBarberia}/g, faqsTxt)
+      .replace(/{pagosBarberia}/g, pagosTxt)
+      .replace(/{upsellText}/g, upsell)
+      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
+      .replace(/{horasOcupadasHoy}/g, '');
+      
   } else {
-    systemPrompt = BARBERIA_CONFIG?.system_prompt || '';
+    systemPrompt = (VENTAS_PROMPT || '').trim() || 
+      'Eres Cortex IA (ventas). Tono humano, corto. Guía a /start test o llamada.';
   }
 
-  // Replace template variables in system prompt
-  if (systemPrompt.includes('<')) {
-    systemPrompt = systemPrompt
-      .replace(/<SERVICIOS>/g, serviciosTxt)
-      .replace(/<FAQ>/g, faqsTxt)
-      .replace(/<PAGOS>/g, pagosTxt)
-      .replace(/<UPS>/g, upsell)
-      .replace(/<HORARIO_HOY>/g, horarioHoy)
-      .replace(/<SLOTS_DISPONIBLES_HOY>/g, slotsDisponiblesHoyTxt);
+  state.conversationHistory.push({ role: 'user', content: userMessage });
+  
+  if (state.conversationHistory.length > 20) {
+    state.conversationHistory = state.conversationHistory.slice(-20);
   }
-  
-  const isFirstMessage = state.conversationHistory.length === 0;
-  
-  if (isFirstMessage) {
-    state.conversationHistory.push({
-      role: 'system',
-      content: `Eres un asistente virtual para una barbería. Tu tarea es ayudar a los clientes a agendar citas, responder preguntas y brindar información sobre los servicios. Usa un tono amable, profesional y eficiente. Si no estás seguro sobre algo, es mejor pedir aclaraciones. Nunca asumas información. Siempre pregunta si algo no está claro.`
-    });
-  }
-  
-  state.conversationHistory.push({
-    role: 'user',
-    content: userMessage
-  });
-  
-  const maxTokens = 300;
-  const temperature = 0.7;
-  
+
   try {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+    const completion = await openai.chat.completions.create({ 
+      model: 'gpt-4o-mini', 
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: systemPrompt }, 
         ...state.conversationHistory
-      ],
-      max_tokens: maxTokens,
-      temperature: temperature
+      ], 
+      temperature: state.mode === 'demo' ? 0.4 : 0.6, 
+      max_tokens: 500 
     });
     
-    const respuestaAI = response.choices[0]?.message?.content?.trim();
+    let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || 
+      '¿Te ayudo con algo más?';
     
-    if (respuestaAI) {
-      state.conversationHistory.push({
-        role: 'assistant',
-        content: respuestaAI
-      });
+    if (state.mode === 'demo') {
+      respuesta = await procesarTags(respuesta, chatId);
+      
+      // 🔥 NUEVO: Detectar y crear cita automáticamente si OpenAI no generó el tag
+      await detectarYCrearCitaAutomatica(state.conversationHistory, respuesta, chatId);
     }
     
-    return respuestaAI;
-  } catch (error) {
-    console.error('❌ Error en chatWithAI:', error);
-    return 'Lo siento, hubo un problema procesando tu solicitud. Intenta nuevamente más tarde.';
+    const frasesNoSabe = [
+      'no estoy seguro', 
+      'no tengo esa información', 
+      'no puedo ayudarte', 
+      'necesito confirmarlo', 
+      'no sé'
+    ];
+    
+    const noSabe = frasesNoSabe.some(f => respuesta.toLowerCase().includes(f));
+    
+    if (noSabe) {
+      await notificarDueno(
+        `❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta: "${respuesta}"\n\n💡 Revisa el chat.`,
+        chatId
+      );
+    }
+    
+    state.conversationHistory.push({ role: 'assistant', content: respuesta });
+    
+    return respuesta;
+    
+  } catch (e) {
+    console.error('OpenAI error:', e.message);
+    await notificarDueno(
+      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`,
+      chatId
+    );
+    return 'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
   }
 }
-// ========== CLEANUP ON PROCESS EXIT ==========
-process.on('SIGTERM', async () => {
-  console.log('⚠️ SIGTERM received, cleaning up...');
-  await cleanupStaleLocks().catch(() => {});
-  if (client) {
-    await client.destroy().catch(() => {});
+
+// ========== WHATSAPP EVENTS ==========
+client.on('qr', (qr) => {
+  console.log('📱 Código QR generado!');
+  console.log('🌐 Abre este link para escanear:');
+  console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
+  latestQR = qr;
+  qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', async () => {
+  console.log('✅ Cliente de WhatsApp listo!');
+  console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
+  latestQR = null;
+  
+  await initDataFiles();
+  await cargarConfigBarberia();
+  await cargarVentasPrompt();
+  
+  console.log('📝 Estado de archivos:');
+  console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
+  console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
+  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
+});
+
+client.on('message', async (message) => {
+  try {
+    if (message.from.includes('@g.us') || message.fromMe) return;
+    
+    const userId = message.from;
+    const userMessage = (message.body || '').trim();
+    const state = getUserState(userId);
+
+    let processedMessage = userMessage;
+    
+    if (message.hasMedia && 
+        (message.type === 'audio' || 
+         message.type === 'ptt' || 
+         (message.mimetype && message.mimetype.startsWith('audio/')))) {
+      try {
+        const transcript = await transcribeVoiceFromMsg(message);
+        if (transcript) {
+          processedMessage = transcript;
+          console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
+        } else {
+          await humanDelay(); // 🛡️ Anti-ban
+          await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
+          return;
+        }
+      } catch (e) {
+        console.error('[Handler Voz] Error:', e);
+        await humanDelay(); // 🛡️ Anti-ban
+        await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
+        return;
+      }
+    }
+    
+    if (!processedMessage && !userMessage.startsWith('/')) return;
+    
+    console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
+    
+    const comandosEspeciales = [
+      '/bot on', 
+      '/bot off', 
+      '/show bookings', 
+      '/send later', 
+      '/start test', 
+      '/end test', 
+      '/ayuda', 
+      '/help',
+      '/config',
+      '/set owner'
+    ];
+    const esComandoEspecial = comandosEspeciales.some(cmd => 
+      (processedMessage || userMessage).toLowerCase().includes(cmd)
+    );
+    
+    if (!state.botEnabled && !esComandoEspecial) {
+      return;
+    }
+
+    // 🔥 NUEVO: Intentar manejar cancelación directamente (sin OpenAI)
+    const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
+    
+    if (respuestaCancelacion) {
+      // Se detectó y manejó una cancelación
+      await humanDelay(); // 🛡️ Anti-ban
+      await message.reply(respuestaCancelacion);
+      return; // No pasar a OpenAI
+    }
+
+    const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
+    
+    if (respuesta) {
+      await humanDelay(); // 🛡️ Anti-ban
+      await message.reply(respuesta);
+    }
+    
+  } catch (e) {
+    console.error('❌ Error procesando mensaje:', e.message);
+    try {
+      await notificarDueno(
+        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
+        message.from
+      );
+    } catch (notifyError) {
+      console.error('❌ Error notificando sobre error:', notifyError.message);
+    }
   }
-  process.exit(0);
 });
 
-process.on('SIGINT', async () => {
-  console.log('⚠️ SIGINT received, cleaning up...');
-  await cleanupStaleLocks().catch(() => {});
-  if (client) {
-    await client.destroy().catch(() => {});
-  }
-  process.exit(0);
+client.on('disconnected', (r) => { 
+  console.log('❌ Cliente desconectado:', r); 
+  latestQR = null;
 });
 
-process.on('uncaughtException', async (error) => {
-  console.error('💥 Uncaught Exception:', error);
-  await cleanupStaleLocks().catch(() => {});
+client.on('auth_failure', (msg) => {
+  console.error('❌ Fallo de autenticación:', msg);
+  latestQR = null;
 });
 
-process.on('unhandledRejection', async (reason, promise) => {
-  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
-  await cleanupStaleLocks().catch(() => {});
+// ========== START ==========
+console.log('🚀 Iniciando Cortex AI Bot...');
+// 🔥 DEBUG: Verificar timezone al iniciar
+const ahora = now();
+console.log('🕐 TIMEZONE DEBUG:', {
+  timezone: TIMEZONE,
+  fecha: ahora.toFormat('yyyy-MM-dd'),
+  hora: ahora.toFormat('HH:mm'),
+  diaSemana: ahora.toFormat('cccc'),
+  fechaCompleta: ahora.toString()
+});
+
+console.log(`📍 Timezone: ${TIMEZONE}`);
+console.log(`👤 Owner: ${OWNER_NUMBER}`);
+client.initialize();
+
+// ========== GLOBAL ERRORS ==========
+process.on('unhandledRejection', (e) => {
+  console.error('❌ UNHANDLED REJECTION:', e);
+});
+
+process.on('uncaughtException', (e) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', e);
 });
