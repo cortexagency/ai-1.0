@@ -1,12 +1,19 @@
 FROM node:20-slim
 
-# Install Chromium and dependencies
+# Install required dependencies first
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        wget \
+        gnupg \
+        ca-certificates
+
+# Add Chromium repository and install Chromium
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
         chromium \
-        chromium-browser \
-        nss \
-        freetype2 \
+        libnss3 \
         libfreetype6 \
         libfreetype6-dev \
         libharfbuzz0b \
