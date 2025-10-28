@@ -1,16 +1,17 @@
 FROM node:20-slim
 
-# Install Chromium dependencies
+# Install Chromium and dependencies
 RUN apt-get update \
-    && apt-get install -y chromium \
     && apt-get install -y --no-install-recommends \
+        chromium \
         chromium-browser \
         nss \
-        freetype2-demos \
-        freetype-dev \
-        harfbuzz \
+        freetype2 \
+        libfreetype6 \
+        libfreetype6-dev \
+        libharfbuzz0b \
         ca-certificates \
-        ttf-freefont \
+        fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
