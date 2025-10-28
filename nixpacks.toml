@@ -17,7 +17,11 @@ nixPkgs = [
   'xorg.libXi',
   'xorg.libXrender',
   'xorg.libXtst',
-  'libxshmfence'
+  'libxshmfence',
+  'xdg-utils',
+  'libdrm',
+  'mesa',
+  'gtk3'
 ]
 
 [phases.install]
@@ -32,6 +36,10 @@ export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 export PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 export CHROME_BIN=/usr/bin/chromium
 export CHROMIUM_PATH=/usr/bin/chromium
+export DISPLAY=:99
+
+# Start virtual framebuffer
+Xvfb :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
 
 # Debug info
 echo "🔧 Debug: Environment Setup"

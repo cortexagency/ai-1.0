@@ -343,152 +343,200 @@ app.get('/', (req, res) => {
   `);
 });
 
+// Update the QR endpoint with better error handling
 app.get('/qr', async (req, res) => {
-  // Add cache control headers
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-
-  // Check QR timeout
-  if (qrGenerationTime && Date.now() - qrGenerationTime > QR_TIMEOUT) {
-    latestQR = null;
-    clientStatus = 'timeout';
-  }
-
-  if (!latestQR || clientStatus === 'ready' || clientStatus === 'error' || clientStatus === 'timeout') {
-    const status = {
-      ready: '✅ Cliente conectado',
-      error: '❌ Error de conexión',
-      timeout: '⏰ QR expirado, refresca la página',
-      initializing: '⏳ Iniciando cliente...',
-      disconnected: '🔌 Desconectado'
-    }[clientStatus] || '⏳ Generando QR...';
-
-    return res.send(`
-      <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - Estado</title>
-        <meta http-equiv="refresh" content="3">
-        <style>
-          body {
-            font-family: monospace;
-            background: #000;
-            color: #0f0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            text-align: center;
-            padding: 20px;
-            margin: 0;
-          }
-          .status-box {
-            background: rgba(0,255,0,0.1);
-            padding: 20px;
-            border-radius: 10px;
-            border: 1px solid #0f0;
-          }
-          .error { color: #ff0000; border-color: #ff0000; background: rgba(255,0,0,0.1); }
-          .warning { color: #ffaa00; border-color: #ffaa00; background: rgba(255,170,0,0.1); }
-        </style>
-      </head><body>
-        <div class="status-box ${clientStatus === 'error' ? 'error' : clientStatus === 'timeout' ? 'warning' : ''}">
-          <h2>${status}</h2>
-          <p>Estado: ${clientStatus}</p>
-          <p>Última actualización: ${new Date().toLocaleTimeString()}</p>
-          ${clientStatus === 'error' || clientStatus === 'timeout' ? 
-            '<p><button onclick="window.location.reload()">Reintentar</button></p>' : 
-            '<p>Actualizando automáticamente...</p>'}
-        </div>
-      </body>
-      </html>
-    `);
-  }
-
-  try {
-    const qrSVG = await QRCode.toString(latestQR, { 
-      type: 'svg',
-      width: 400,
-      margin: 2,
-      color: { dark: '#000', light: '#fff' }
-    });
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     
-    res.send(`
-      <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - Escanea QR</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            background: #1a1a1a;
-            color: #fff;
-            padding: 20px;
-            margin: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-          }
-          .container { text-align: center; max-width: 500px; }
-          h1 { color: #00ff00; margin-bottom: 20px; font-size: 24px; }
-          .qr-box {
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            display: inline-block;
-            margin: 20px 0;
-            box-shadow: 0 10px 40px rgba(0, 255, 0, 0.3);
-          }
-          .instructions {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-            text-align: left;
-            line-height: 1.8;
-          }
-          .instructions ol { padding-left: 20px; }
-          .warning {
-            background: rgba(255, 100, 0, 0.2);
-            border-left: 4px solid #ff6400;
-            padding: 15px;
-            margin-top: 15px;
-            border-radius: 5px;
-            text-align: left;
-          }
-        </style>
-      </head><body>
-        <div class="container">
-          <h1>📱 CORTEX AI BOT</h1>
-          <div class="qr-box">${qrSVG}</div>
-          <div class="instructions">
-            <strong>📋 Pasos para vincular:</strong>
-            <ol>
-              <li>Abre <strong>WhatsApp</strong> en tu celular</li>
-              <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
-              <li>Toca <strong>"Vincular un dispositivo"</strong></li>
-              <li><strong>Escanea este QR</strong> directamente desde WhatsApp</li>
-            </ol>
-          </div>
-          <div class="warning">
-            <strong>⚠️ Si no funciona:</strong><br>
-            Usa la app de <strong>Cámara</strong> de tu celular, apunta a la pantalla y abre el link que aparece
-          </div>
-        </div>
-      </body></html>
-    `);
-  } catch (error) {
-    console.error('Error generating QR:', error);
-    res.status(500).send(`
-      <html><head><title>Error</title>
-      <style>body { font-family: monospace; background: #000; color: #f00; padding: 20px; text-align: center; }</style>
-      </head><body>
-        <h1>❌ Error generando QR</h1>
-        <p>${error.message}</p>
-        <p><a href="/qr" style="color: #0f0;">Reintentar</a></p>
-      </body></html>
-    `);
-  }
+    try {
+        if (!client) {
+            throw new Error('WhatsApp client not initialized');
+        }
+
+        // Check QR timeout
+        if (qrGenerationTime && Date.now() - qrGenerationTime > QR_TIMEOUT) {
+            latestQR = null;
+            clientStatus = 'timeout';
+            // Try to reinitialize
+            initializeWhatsAppClient().catch(console.error);
+        }
+
+        if (!latestQR || clientStatus === 'ready' || clientStatus === 'error' || clientStatus === 'timeout') {
+            const status = {
+                ready: '✅ Cliente conectado',
+                error: '❌ Error de conexión - Reintentando...',
+                timeout: '⏰ QR expirado - Generando nuevo...',
+                initializing: '⏳ Iniciando cliente...',
+                disconnected: '🔌 Desconectado - Reconectando...'
+            }[clientStatus] || '⏳ Generando QR...';
+
+            return res.send(`
+                <!DOCTYPE html><html><head>
+                    <title>Cortex AI Bot - Estado</title>
+                    <meta http-equiv="refresh" content="5">
+                    <style>
+                        body { 
+                            font-family: monospace; 
+                            background: #000; 
+                            color: #0f0; 
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            min-height: 100vh;
+                            margin: 0;
+                            padding: 20px;
+                            text-align: center;
+                        }
+                        .status-box {
+                            background: rgba(0,255,0,0.1);
+                            padding: 20px 40px;
+                            border-radius: 10px;
+                            border: 1px solid #0f0;
+                            max-width: 500px;
+                        }
+                        .error { color: #ff0000; border-color: #ff0000; background: rgba(255,0,0,0.1); }
+                        .warning { color: #ffaa00; border-color: #ffaa00; background: rgba(255,170,0,0.1); }
+                        .retry-btn {
+                            background: #1a1a1a;
+                            color: #0f0;
+                            border: 1px solid #0f0;
+                            padding: 10px 20px;
+                            border-radius: 5px;
+                            cursor: pointer;
+                            margin-top: 15px;
+                        }
+                        .retry-btn:hover { background: #2a2a2a; }
+                    </style>
+                </head><body>
+                    <div class="status-box ${clientStatus === 'error' ? 'error' : clientStatus === 'timeout' ? 'warning' : ''}">
+                        <h2>${status}</h2>
+                        <p>Estado: ${clientStatus}</p>
+                        <p>Última actualización: ${new Date().toLocaleTimeString()}</p>
+                        ${clientStatus === 'error' || clientStatus === 'timeout' ? 
+                            '<button class="retry-btn" onclick="window.location.reload()">Reintentar</button>' : 
+                            '<p>Actualizando automáticamente...</p>'}
+                    </div>
+                </body></html>
+            `);
+        }
+
+        const qrSVG = await QRCode.toString(latestQR, { 
+            type: 'svg',
+            width: 400,
+            margin: 4,
+            color: {
+                dark: '#000',
+                light: '#fff'
+            }
+        });
+
+        // Return the QR code page
+        return res.send(`
+            <!DOCTYPE html><html><head>
+                <title>Cortex AI Bot - Escanea QR</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta http-equiv="refresh" content="60">
+                <style>
+                    body {
+                        font-family: system-ui, -apple-system, sans-serif;
+                        background: #1a1a1a;
+                        color: #fff;
+                        margin: 0;
+                        padding: 20px;
+                        min-height: 100vh;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        text-align: center;
+                    }
+                    .container { max-width: 500px; }
+                    h1 { color: #00ff00; margin-bottom: 30px; }
+                    .qr-box {
+                        background: white;
+                        padding: 20px;
+                        border-radius: 15px;
+                        display: inline-block;
+                        margin: 20px auto;
+                        box-shadow: 0 0 50px rgba(0,255,0,0.2);
+                    }
+                    .instructions {
+                        background: rgba(255,255,255,0.1);
+                        padding: 20px;
+                        border-radius: 10px;
+                        margin: 20px 0;
+                        text-align: left;
+                    }
+                    .warning {
+                        background: rgba(255,180,0,0.2);
+                        border-left: 4px solid #ffb400;
+                        padding: 15px;
+                        margin-top: 15px;
+                        text-align: left;
+                    }
+                </style>
+            </head><body>
+                <div class="container">
+                    <h1>📱 CORTEX AI BOT</h1>
+                    <div class="qr-box">${qrSVG}</div>
+                    <div class="instructions">
+                        <strong>📋 Para conectar:</strong>
+                        <ol>
+                            <li>Abre WhatsApp en tu celular</li>
+                            <li>Toca Menú (⋮) → Dispositivos vinculados</li>
+                            <li>Selecciona "Vincular dispositivo"</li>
+                            <li>Apunta la cámara al código QR</li>
+                        </ol>
+                    </div>
+                    <div class="warning">
+                        <strong>⚠️ Importante:</strong><br>
+                        Este código QR expira en 60 segundos.<br>
+                        Si expira, refresca la página para generar uno nuevo.
+                    </div>
+                </div>
+            </body></html>
+        `);
+
+    } catch (error) {
+        console.error('Error en /qr:', error);
+        return res.status(500).send(`
+            <!DOCTYPE html><html><head>
+                <title>Error</title>
+                <meta http-equiv="refresh" content="5">
+                <style>
+                    body { 
+                        font-family: monospace; 
+                        background: #000; 
+                        color: #ff0000; 
+                        padding: 20px; 
+                        text-align: center;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 100vh;
+                        margin: 0;
+                    }
+                    .error-box {
+                        background: rgba(255,0,0,0.1);
+                        padding: 20px;
+                        border-radius: 10px;
+                        border: 1px solid #ff0000;
+                        max-width: 500px;
+                    }
+                    a { color: #00ff00; }
+                </style>
+            </head><body>
+                <div class="error-box">
+                    <h1>❌ Error</h1>
+                    <p>${error.message}</p>
+                    <p>Reintentando en 5 segundos...</p>
+                    <p><a href="/qr">Reintentar ahora</a></p>
+                </div>
+            </body></html>
+        `);
+    }
 });
 
 app.get('/health', (req, res) => {
@@ -1896,7 +1944,6 @@ async function transcribeVoiceFromMsg(msg) {
 // ========== CHAT CORE ==========
 async function chatWithAI(userMessage, userId, chatId) {
   const state = getUserState(userId);
-
   const msgLower = userMessage.toLowerCase();
   
   if (msgLower.includes('/ayuda') || msgLower.includes('/help')) {
@@ -1962,37 +2009,42 @@ async function chatWithAI(userMessage, userId, chatId) {
   if (msgLower.includes('/end test')) { 
     state.mode = 'sales'; 
     state.conversationHistory = []; 
-    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n
-    
-    const horarioLv = horario.lun_vie || ''; 
-    const horarioS = horario.sab || ''; 
-    const horarioD = horario.dom || '';
-    
-    const horarioHoy = (
-      diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS : 
-      diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : 
-      horarioLv
-    ) || 'Cerrado';
-    
-    const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
-    const horaActual = hoy.toFormat('h:mm a');
-    
-    const bookings = await readBookings();
-    const citasUsuario = bookings.filter(b => 
-      b.chatId === chatId && 
-      b.status !== 'cancelled'
-    );
-    
-    let citasUsuarioTxt = '';
-    if (citasUsuario.length > 0) {
-      citasUsuarioTxt = '\n\n**📋 TUS CITAS ACTUALES:**\n';
-      citasUsuario.forEach((cita, i) => {
-        citasUsuarioTxt += `${i+1}. ${cita.nombreCliente} - ${cita.servicio} - ${cita.fecha} a las ${cita.hora_inicio}\n`;
-      });
-      citasUsuarioTxt += '\n*Si el cliente quiere cancelar, usa estos datos EXACTOS en el tag <CANCELLED:...>*\n';
-    }
-    
-    const fallback = `🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
+    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).'; 
+  }
+
+  // Get current date/time info
+  const ahora = now();
+  const diaSemanaTxt = ahora.setLocale('es').toFormat('EEEE');
+  const fechaISO = ahora.toFormat('yyyy-MM-dd');
+  const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
+
+  // Generate service text
+  const serviciosTxt = generarTextoServicios();
+  const faqsTxt = generarTextoFAQs();
+  const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
+  const upsell = BARBERIA_CONFIG?.upsell || '';
+  
+  // Get schedule text
+  const horarioLv = BARBERIA_CONFIG?.horario?.lun_vie || ''; 
+  const horarioS = BARBERIA_CONFIG?.horario?.sab || ''; 
+  const horarioD = BARBERIA_CONFIG?.horario?.dom || '';
+  
+  const horarioHoy = (
+    diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS : 
+    diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : 
+    horarioLv
+  ) || 'Cerrado';
+
+  // Get available slots
+  const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO);
+
+  let systemPrompt = '';
+  
+  if (state.mode === 'demo') {
+    // Generate demo system prompt
+    systemPrompt = `Eres un asistente virtual para una barbería. Tu tarea es ayudar a los clientes a agendar citas, responder preguntas y brindar información sobre los servicios. Usa un tono amable, profesional y eficiente. Si no estás seguro sobre algo, es mejor pedir aclaraciones. Nunca asumas información. Siempre pregunta si algo no está claro.
+
+🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
 📅 HOY ES: ${diaSemanaTxt}, ${fechaISO}
 🕐 HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
 
@@ -2001,8 +2053,7 @@ async function chatWithAI(userMessage, userId, chatId) {
 - Solo ofrece horarios FUTUROS que no hayan pasado
 - Si un horario ya pasó HOY, NO lo ofrezcas
 
-Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
-${citasUsuarioTxt}
+Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${hoy.toFormat('h:mm a')}.
 
 **🚨 REGLAS OBLIGATORIAS PARA AGENDAR:**
 1. Pregunta qué servicio necesita
@@ -2023,25 +2074,21 @@ ${citasUsuarioTxt}
    <CANCELLED:{"nombreCliente":"(nombre EXACTO de la cita)","fecha":"YYYY-MM-DD","hora_inicio":"HH:MM"}>
 3. **CRÍTICO:** Debes emitir el tag <CANCELLED:...> EN LA MISMA RESPUESTA donde confirmas la cancelación
 4. **FORMATO OBLIGATORIO:** fecha="YYYY-MM-DD" y hora_inicio="HH:MM" en formato 24h
-5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)
-
-**EJEMPLO CORRECTO DE CANCELACIÓN:**
-User: "quiero cancelar mi cita"
-Bot: "Claro, ¿me confirmas que quieres cancelar la cita del 2025-10-24 a las 11:00 AM?"
-User: "sí"
-Bot: "Listo, tu cita ha sido cancelada. Si necesitas reprogramar, avísame. 😊" <CANCELLED:{"nombreCliente":"José Pérez","fecha":"2025-10-24","hora_inicio":"11:00"}>`;
-    
-    systemPrompt = plantilla.replace(/<SERVICIOS>/, serviciosTxt)
-                            .replace(/<FAQ>/, faqsTxt)
-                            .replace(/<PAGOS>/, pagosTxt)
-                            .replace(/<UPS>/, upsell)
-                            .replace(/<HORARIO_HOY>/, horarioHoy)
-                            .replace(/<SLOTS_DISPONIBLES_HOY>/, slotsDisponiblesHoyTxt);
+5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)`;
   } else {
     systemPrompt = BARBERIA_CONFIG?.system_prompt || '';
   }
-  
-  systemPrompt = systemPrompt.trim();
+
+  // Replace template variables in system prompt
+  if (systemPrompt.includes('<')) {
+    systemPrompt = systemPrompt
+      .replace(/<SERVICIOS>/g, serviciosTxt)
+      .replace(/<FAQ>/g, faqsTxt)
+      .replace(/<PAGOS>/g, pagosTxt)
+      .replace(/<UPS>/g, upsell)
+      .replace(/<HORARIO_HOY>/g, horarioHoy)
+      .replace(/<SLOTS_DISPONIBLES_HOY>/g, slotsDisponiblesHoyTxt);
+  }
   
   const isFirstMessage = state.conversationHistory.length === 0;
   
