@@ -1,24 +1,8 @@
 [phases.setup]
-aptPkgs = [
-  "libnss3",
-  "libnss3-dev",
-  "libatk1.0-0",
-  "libatk-bridge2.0-0",
-  "libcups2",
-  "libgtk-3-0",
-  "libgdk-pixbuf2.0-0",
-  "libgbm-dev",
-  "libasound2t64",
-  "libxshmfence-dev", # Or libxshmfence1
-  "libglu1-mesa",
-  "libxrandr2",
-  "libxfixes3",
-  "libxcomposite1",
-  "libxdamage1",
-  "libxkbcommon0",
-  "libgobject-2.0-0",
-  "libdrm2",
-  "libx11-xcb1",
-  "libpangocairo-1.0-0",
-  "libcairo2"
-]
+nixPkgs = ['nodejs_20', 'chromium']
+
+[phases.install]
+cmds = ['npm ci --prefer-offline --no-audit']
+
+[start]
+cmd = 'npm start'
