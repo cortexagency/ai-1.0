@@ -91,8 +91,9 @@ console.log('🔧 Puppeteer Config:', {
 // ========== WHATSAPP CLIENT (CON MANEJO DE ERRORES) ==========
 let client;
 
-function initializeWhatsAppClient() {
+async function initializeWhatsAppClient() {
   try {
+    // Create new client instance
     client = new Client({
       authStrategy: new LocalAuth({ 
         dataPath: path.join(DATA_DIR, 'session'),
@@ -105,8 +106,138 @@ function initializeWhatsAppClient() {
       qrMaxRetries: 5
     });
 
+    // Add event handlers
+    client.on('qr', (qr) => {
+      console.log('📱 Código QR generado!');
+      console.log('🌐 Abre este link para escanear:');
+      console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
+      latestQR = qr;
+      clientStatus = 'qr_ready';
+      qrcode.generate(qr, { small: true });
+    });
+
+    client.on('ready', async () => {
+      console.log('✅ Cliente de WhatsApp listo!');
+      console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
+      latestQR = null;
+      clientStatus = 'ready';
+      
+      await initDataFiles();
+      await cargarConfigBarberia();
+      await cargarVentasPrompt();
+      
+      console.log('📋 Estado de archivos:');
+      console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
+      console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
+      console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
+    });
+
+    client.on('authenticated', () => {
+      console.log('✅ Autenticación exitosa!');
+      clientStatus = 'authenticated';
+    });
+
+    client.on('auth_failure', (msg) => {
+      console.error('❌ Fallo de autenticación:', msg);
+      latestQR = null;
+      clientStatus = 'error';
+    });
+
+    client.on('disconnected', (r) => {
+      console.log('❌ Cliente desconectado:', r);
+      latestQR = null;
+      clientStatus = 'disconnected';
+    });
+
+    client.on('message', async (message) => {
+      try {
+        if (message.from.includes('@g.us') || message.fromMe) return;
+        
+        const userId = message.from;
+        const userMessage = (message.body || '').trim();
+        const state = getUserState(userId);
+
+        let processedMessage = userMessage;
+        
+        if (message.hasMedia && 
+            (message.type === 'audio' || 
+             message.type === 'ptt' || 
+             (message.mimetype && message.mimetype.startsWith('audio/')))) {
+          try {
+            const transcript = await transcribeVoiceFromMsg(message);
+            if (transcript) {
+              processedMessage = transcript;
+              console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
+            } else {
+              await humanDelay();
+              await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
+              return;
+            }
+          } catch (e) {
+            console.error('[Handler Voz] Error:', e);
+            await humanDelay();
+            await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
+            return;
+          }
+        }
+        
+        if (!processedMessage && !userMessage.startsWith('/')) return;
+        
+        console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
+        
+        const comandosEspeciales = [
+          '/bot on', 
+          '/bot off', 
+          '/show bookings', 
+          '/send later', 
+          '/start test', 
+          '/end test', 
+          '/ayuda', 
+          '/help',
+          '/config',
+          '/set owner'
+        ];
+        const esComandoEspecial = comandosEspeciales.some(cmd => 
+          (processedMessage || userMessage).toLowerCase().includes(cmd)
+        );
+        
+        if (!state.botEnabled && !esComandoEspecial) {
+          return;
+        }
+
+        const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
+        
+        if (respuestaCancelacion) {
+          await humanDelay();
+          await message.reply(respuestaCancelacion);
+          return;
+        }
+
+        const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
+        
+        if (respuesta) {
+          await humanDelay();
+          await message.reply(respuesta);
+        }
+        
+      } catch (e) {
+        console.error('❌ Error procesando mensaje:', e.message);
+        try {
+          await notificarDueno(
+            `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
+            message.from
+          );
+        } catch (notifyError) {
+          console.error('❌ Error notificando sobre error:', notifyError.message);
+        }
+      }
+    });
+
+    // Initialize the client
+    await client.initialize();
     console.log('✅ WhatsApp Client configurado correctamente');
     return true;
+
   } catch (error) {
     console.error('❌ ERROR CRÍTICO al configurar WhatsApp Client:', error);
     console.error('Stack completo:', error.stack);
@@ -1059,7 +1190,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
           console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
         }
         
-        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
+        console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
         await notificarDueno(
           `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
           chatId
@@ -1840,256 +1971,60 @@ ${citasUsuarioTxt}
 User: "quiero cancelar mi cita"
 Bot: "Claro, ¿me confirmas que quieres cancelar la cita del 2025-10-24 a las 11:00 AM?"
 User: "sí"
-Bot: "Listo, tu cita ha sido cancelada. <CANCELLED:{"nombreCliente":"Zapata el duende","fecha":"2025-10-24","hora_inicio":"11:00"}>"
-
-**⏰ HORARIOS DISPONIBLES HOY:**
-${slotsDisponiblesHoyTxt}
-
----
-**Info:**
-Horario de hoy: ${horarioHoy}
-**Servicios:**
-${serviciosTxt}
-**Dirección:** ${direccion}
-**Pagos:** ${pagosTxt}
-**FAQs:**
-${faqsTxt}
-**Upsell:** ${upsell}`;
+Bot: "Listo, tu cita ha sido cancelada. Si necesitas reprogramar, avísame. 😊" <CANCELLED:{"nombreCliente":"José Pérez","fecha":"2025-10-24","hora_inicio":"11:00"}>`;
     
-    systemPrompt = (plantilla || fallback)
-      .replace(/{hoy}/g, fechaISO)
-      .replace(/{horaActual}/g, horaActual)
-      .replace(/{diaSemana}/g, diaSemanaTxt)
-      .replace(/{nombreBarberia}/g, nombreBarberia)
-      .replace(/{direccionBarberia}/g, direccion)
-      .replace(/{telefonoBarberia}/g, telefono)
-      .replace(/{horarioLv}/g, horarioLv)
-      .replace(/{horarioS}/g, horarioS)
-      .replace(/{horarioD}/g, horarioD)
-      .replace(/{horarioHoy}/g, horarioHoy)
-      .replace(/{serviciosTxt}/g, serviciosTxt)
-      .replace(/{faqsBarberia}/g, faqsTxt)
-      .replace(/{pagosBarberia}/g, pagosTxt)
-      .replace(/{upsellText}/g, upsell)
-      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
-      .replace(/{horasOcupadasHoy}/g, '');
-      
+    systemPrompt = plantilla.replace(/<SERVICIOS>/, serviciosTxt)
+                            .replace(/<FAQ>/, faqsTxt)
+                            .replace(/<PAGOS>/, pagosTxt)
+                            .replace(/<UPS>/, upsell)
+                            .replace(/<HORARIO_HOY>/, horarioHoy)
+                            .replace(/<SLOTS_DISPONIBLES_HOY>/, slotsDisponiblesHoyTxt);
   } else {
-    systemPrompt = (VENTAS_PROMPT || '').trim() || 
-      'Eres Cortex IA (ventas). Tono humano, corto. Guía a /start test o llamada.';
+    systemPrompt = BARBERIA_CONFIG?.system_prompt || '';
   }
-
-  state.conversationHistory.push({ role: 'user', content: userMessage });
   
-  if (state.conversationHistory.length > 20) {
-    state.conversationHistory = state.conversationHistory.slice(-20);
+  systemPrompt = systemPrompt.trim();
+  
+  const isFirstMessage = state.conversationHistory.length === 0;
+  
+  if (isFirstMessage) {
+    state.conversationHistory.push({
+      role: 'system',
+      content: `Eres un asistente virtual para una barbería. Tu tarea es ayudar a los clientes a agendar citas, responder preguntas y brindar información sobre los servicios. Usa un tono amable, profesional y eficiente. Si no estás seguro sobre algo, es mejor pedir aclaraciones. Nunca asumas información. Siempre pregunta si algo no está claro.`
+    });
   }
-
+  
+  state.conversationHistory.push({
+    role: 'user',
+    content: userMessage
+  });
+  
+  const maxTokens = 300;
+  const temperature = 0.7;
+  
   try {
-    const completion = await openai.chat.completions.create({ 
-      model: 'gpt-4o-mini', 
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
       messages: [
-        { role: 'system', content: systemPrompt }, 
+        { role: 'system', content: systemPrompt },
         ...state.conversationHistory
-      ], 
-      temperature: state.mode === 'demo' ? 0.4 : 0.6, 
-      max_tokens: 500 
+      ],
+      max_tokens: maxTokens,
+      temperature: temperature
     });
     
-    let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || 
-      '¿Te ayudo con algo más?';
+    const respuestaAI = response.choices[0]?.message?.content?.trim();
     
-    if (state.mode === 'demo') {
-      respuesta = await procesarTags(respuesta, chatId);
-      
-      await detectarYCrearCitaAutomatica(state.conversationHistory, respuesta, chatId);
+    if (respuestaAI) {
+      state.conversationHistory.push({
+        role: 'assistant',
+        content: respuestaAI
+      });
     }
     
-    const frasesNoSabe = [
-      'no estoy seguro', 
-      'no tengo esa información', 
-      'no puedo ayudarte', 
-      'necesito confirmarlo', 
-      'no sé'
-    ];
-    
-    const noSabe = frasesNoSabe.some(f => respuesta.toLowerCase().includes(f));
-    
-    if (noSabe) {
-      await notificarDueno(
-        `❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta: "${respuesta}"\n\n💡 Revisa el chat.`,
-        chatId
-      );
-    }
-    
-    state.conversationHistory.push({ role: 'assistant', content: respuesta });
-    
-    return respuesta;
-    
-  } catch (e) {
-    console.error('OpenAI error:', e.message);
-    await notificarDueno(
-      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`,
-      chatId
-    );
-    return 'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
+    return respuestaAI;
+  } catch (error) {
+    console.error('❌ Error en chatWithAI:', error);
+    return 'Lo siento, hubo un problema procesando tu solicitud. Intenta nuevamente más tarde.';
   }
 }
-
-// ========== WHATSAPP EVENTS ==========
-client.on('qr', (qr) => {
-  console.log('📱 Código QR generado!');
-  console.log('🌐 Abre este link para escanear:');
-  console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
-  latestQR = qr;
-  clientStatus = 'qr_ready';
-  qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', async () => {
-  console.log('✅ Cliente de WhatsApp listo!');
-  console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
-  latestQR = null;
-  clientStatus = 'ready';
-  
-  await initDataFiles();
-  await cargarConfigBarberia();
-  await cargarVentasPrompt();
-  
-  console.log('📋 Estado de archivos:');
-  console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
-  console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
-  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
-});
-
-client.on('authenticated', () => {
-  console.log('✅ Autenticación exitosa!');
-  clientStatus = 'authenticated';
-});
-
-client.on('auth_failure', (msg) => {
-  console.error('❌ Fallo de autenticación:', msg);
-  latestQR = null;
-  clientStatus = 'error';
-});
-
-client.on('disconnected', (r) => { 
-  console.log('❌ Cliente desconectado:', r); 
-  latestQR = null;
-  clientStatus = 'disconnected';
-});
-
-client.on('message', async (message) => {
-  try {
-    if (message.from.includes('@g.us') || message.fromMe) return;
-    
-    const userId = message.from;
-    const userMessage = (message.body || '').trim();
-    const state = getUserState(userId);
-
-    let processedMessage = userMessage;
-    
-    if (message.hasMedia && 
-        (message.type === 'audio' || 
-         message.type === 'ptt' || 
-         (message.mimetype && message.mimetype.startsWith('audio/')))) {
-      try {
-        const transcript = await transcribeVoiceFromMsg(message);
-        if (transcript) {
-          processedMessage = transcript;
-          console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
-        } else {
-          await humanDelay();
-          await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
-          return;
-        }
-      } catch (e) {
-        console.error('[Handler Voz] Error:', e);
-        await humanDelay();
-        await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
-        return;
-      }
-    }
-    
-    if (!processedMessage && !userMessage.startsWith('/')) return;
-    
-    console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
-    
-    const comandosEspeciales = [
-      '/bot on', 
-      '/bot off', 
-      '/show bookings', 
-      '/send later', 
-      '/start test', 
-      '/end test', 
-      '/ayuda', 
-      '/help',
-      '/config',
-      '/set owner'
-    ];
-    const esComandoEspecial = comandosEspeciales.some(cmd => 
-      (processedMessage || userMessage).toLowerCase().includes(cmd)
-    );
-    
-    if (!state.botEnabled && !esComandoEspecial) {
-      return;
-    }
-
-    const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
-    
-    if (respuestaCancelacion) {
-      await humanDelay();
-      await message.reply(respuestaCancelacion);
-      return;
-    }
-
-    const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
-    
-    if (respuesta) {
-      await humanDelay();
-      await message.reply(respuesta);
-    }
-    
-  } catch (e) {
-    console.error('❌ Error procesando mensaje:', e.message);
-    try {
-      await notificarDueno(
-        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
-        message.from
-      );
-    } catch (notifyError) {
-      console.error('❌ Error notificando sobre error:', notifyError.message);
-    }
-  }
-});
-
-// ========== START ==========
-console.log('🚀 Iniciando Cortex AI Bot...');
-const ahora = now();
-console.log('🕐 TIMEZONE DEBUG:', {
-  timezone: TIMEZONE,
-  fecha: ahora.toFormat('yyyy-MM-dd'),
-  hora: ahora.toFormat('HH:mm'),
-  diaSemana: ahora.toFormat('cccc'),
-  fechaCompleta: ahora.toString()
-});
-
-console.log(`📍 Timezone: ${TIMEZONE}`);
-console.log(`👤 Owner: ${OWNER_NUMBER}`);
-
-if (initializeWhatsAppClient()) {
-  client.initialize();
-} else {
-  console.error('❌ No se pudo inicializar el cliente de WhatsApp');
-  process.exit(1);
-}
-
-// ========== GLOBAL ERRORS ==========
-process.on('unhandledRejection', (e) => {
-  console.error('❌ UNHANDLED REJECTION:', e);
-});
-
-process.on('uncaughtException', (e) => {
-  console.error('❌ UNCAUGHT EXCEPTION:', e);
-  console.error('Stack:', e.stack);
-});
