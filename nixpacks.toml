@@ -1,33 +1,8 @@
 [phases.setup]
-nixPkgs = [
-  'nodejs_20',
-  'chromium',
-  'nss',
-  'freetype',
-  'harfbuzz',
-  'cacert',
-  'ttf-freefont',
-  'xorg.libxscrnsaver',
-  'xorg.libX11',
-  'xorg.libXcomposite',
-  'xorg.libXcursor',
-  'xorg.libXdamage',
-  'xorg.libXext',
-  'xorg.libXfixes',
-  'xorg.libXi',
-  'xorg.libXrender',
-  'xorg.libXtst',
-  'libxshmfence',
-  'xdg-utils',
-  'libdrm',
-  'mesa',
-  'gtk3'
-]
+nixPkgs = ['nodejs_20', 'chromium']
 
 [phases.install]
-cmds = [
-  'npm ci --prefer-offline --no-audit'
-]
+cmds = ['npm ci --prefer-offline --no-audit']
 
 [start]
 cmd = "node index.js"
