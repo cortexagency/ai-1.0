@@ -198,8 +198,8 @@ async function initializeWhatsAppClient() {
         )
       ]);
 
+
       return true;
-    } finally {
     } catch (error) {
       console.error('❌ Initialization failed:', error);
       clientStatus = 'error';
@@ -208,6 +208,7 @@ async function initializeWhatsAppClient() {
       await cleanupStaleLocks().catch(() => {});
       
       throw error;
+    } finally {
       initializationPromise = null;
     }
   })();
