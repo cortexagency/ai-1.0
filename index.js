@@ -13,8 +13,6 @@ const OpenAI = require('openai');
 const { DateTime } = require('luxon');
 const express = require('express');
 
-// Import the Puppeteer helper for robust browser launching
-const { launchBrowser } = require('./puppeteer-launch');
 // ========== CONFIGURACIÓN ==========
 let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554';
 let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
@@ -67,18 +65,24 @@ async function sendWithTyping(chat, message) {
 
 
 // ========== WHATSAPP CLIENT ==========
-// Custom puppeteer instance factory using our robust launcher
-const puppeteerFactory = async () => {
-  const browser = await launchBrowser({
-    // whatsapp-web.js expects a browser instance
-    // The launchBrowser helper handles all the container-safe flags
-  });
-  return browser;
-};
+// 🔥 PATCHED: Configure Puppeteer with container-safe flags
+const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
 const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }), 
-  puppeteer: puppeteerFactory,
+  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
+  puppeteer: {
+    headless: true,
+    executablePath: WWEBJS_EXECUTABLE,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote'
+    ]
+  },
+  qrMaxRetries: 3,
   qrTimeout: 0,
   authTimeout: 0,
 });
