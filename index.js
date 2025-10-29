@@ -572,8 +572,17 @@ async function procesarTags(mensaje, chatId) {
 
   if (bookingMatch) {
     try {
-      // 🔥 FIX: Convertir comillas simples a dobles para robustez
-      let jsonStr = bookingMatch[1].replace(/'/g, '"');
+      // 🔥 FIX: Handle both escaped and unescaped quotes
+      let jsonStr = bookingMatch[1];
+      
+      // Remove backslashes before quotes (OpenAI sometimes adds them)
+      jsonStr = jsonStr.replace(/\\"/g, '"');
+      
+      // If still has single quotes, replace them
+      if (jsonStr.includes("'")) {
+        jsonStr = jsonStr.replace(/'/g, '"');
+      }
+      
       console.log('[📋 BOOKING] JSON raw:', jsonStr);
       
       const bookingData = JSON.parse(jsonStr);
@@ -598,7 +607,7 @@ async function procesarTags(mensaje, chatId) {
         let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
         
         if (alternativas.length > 0) {
-          respuesta += '\n\n🕒 *Horarios disponibles:*\n';
+          respuesta += '\n\n🕐 *Horarios disponibles:*\n';
           alternativas.forEach((h, i) => {
             respuesta += `${i + 1}. ${formatearHora(h)}\n`;
           });
@@ -642,10 +651,17 @@ async function procesarTags(mensaje, chatId) {
       await programarExtranamos(bookingData);
       
       // 🔥 FIX: Notificación robusta al dueño
-      console.log('[📢 NOTIF] Enviando notificación al owner:', OWNER_CHAT_ID);
+      console.log('[📢 NOTIF] ========================================');
+      console.log('[📢 NOTIF] INTENT TO NOTIFY OWNER');
+      console.log('[📢 NOTIF] Owner Chat ID:', OWNER_CHAT_ID);
+      console.log('[📢 NOTIF] From Chat ID:', chatId);
+      console.log('[📢 NOTIF] Client Ready:', !!client?.info);
+      console.log('[📢 NOTIF] Booking:', bookingData.id);
+      console.log('[📢 NOTIF] ========================================');
+      
       try {
         await notificarDueno(
-          `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+          `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
           chatId
         );
         console.log('[✅ NOTIF] Notificación enviada exitosamente');
@@ -655,7 +671,7 @@ async function procesarTags(mensaje, chatId) {
         setTimeout(async () => {
           try {
             await notificarDueno(
-              `📅 *Nueva cita (reintento)*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+              `📅 *Nueva cita (reintento)*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
               chatId
             );
           } catch (e) {
@@ -673,8 +689,17 @@ async function procesarTags(mensaje, chatId) {
 
   if (cancelMatch) {
     try {
-      // 🔥 FIX: Convertir comillas simples a dobles
-      let jsonStr = cancelMatch[1].replace(/'/g, '"');
+      // 🔥 FIX: Handle both escaped and unescaped quotes
+      let jsonStr = cancelMatch[1];
+      
+      // Remove backslashes before quotes
+      jsonStr = jsonStr.replace(/\\"/g, '"');
+      
+      // If still has single quotes, replace them
+      if (jsonStr.includes("'")) {
+        jsonStr = jsonStr.replace(/'/g, '"');
+      }
+      
       console.log('[🗑️ CANCEL] JSON raw:', jsonStr);
       
       const cancelData = JSON.parse(jsonStr);
@@ -733,8 +758,15 @@ async function procesarTags(mensaje, chatId) {
         }
         
         // 🔥 NOTIFICAR AL DUEÑO (SIEMPRE, se filtra dentro de notificarDueno)
-        console.log('[📤 CANCELACIÓN] Enviando notificación al dueño...');
-        const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n🔧 ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
+        console.log('[📤 CANCELACIÓN] ========================================');
+        console.log('[📤 CANCELACIÓN] INTENT TO NOTIFY CANCELLATION');
+        console.log('[📤 CANCELACIÓN] Owner Chat ID:', OWNER_CHAT_ID);
+        console.log('[📤 CANCELACIÓN] From Chat ID:', chatId);
+        console.log('[📤 CANCELACIÓN] Client Ready:', !!client?.info);
+        console.log('[📤 CANCELACIÓN] Booking:', b.id);
+        console.log('[📤 CANCELACIÓN] ========================================');
+        
+        const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n✂️ ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
         await notificarDueno(textoNotificacion, chatId);
         
         console.log('[✅ CANCELACIÓN] Booking cancelado:', b.id);
@@ -753,6 +785,11 @@ async function procesarTags(mensaje, chatId) {
 
 // ========== NOTIFICAR AL DUEÑO (VERSION CORREGIDA) ==========
 async function notificarDueno(txt, fromChatId = null) {
+  console.log('[📢 NOTIF] ===== FUNCTION CALLED =====');
+  console.log('[📢 NOTIF] Text:', txt.substring(0, 50));
+  console.log('[📢 NOTIF] From:', fromChatId);
+  console.log('[📢 NOTIF] Owner:', OWNER_CHAT_ID);
+  
   try {
     // 🔥 VALIDACIÓN CRÍTICA 1: Verificar que el cliente esté inicializado
     if (!client || !client.info) {
@@ -786,7 +823,7 @@ async function notificarDueno(txt, fromChatId = null) {
     console.log(`[✅ NOTIFICACIÓN] ===================`);
   }
   catch (e) { 
-    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
     console.error('[❌ NOTIFICACIÓN] FALLÓ EL ENVÍO');
     console.error('[❌ NOTIFICACIÓN] Error:', e.message);
     console.error('[❌ NOTIFICACIÓN] Tipo error:', e.constructor.name);
@@ -799,7 +836,7 @@ async function notificarDueno(txt, fromChatId = null) {
       pupBrowser: !!client?.pupBrowser,
       authenticated: client?.info?.wid !== undefined
     });
-    console.error('[❌ NOTIFICACIÓN] ××××××××××××××××××××××');
+    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
   }
 }
 
@@ -916,7 +953,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
           // Buscar palabras capitalizadas
           const palabras = msg.content.split(/\s+/);
           for (const palabra of palabras) {
-            if (/^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}$/.test(palabra) && 
+            if (/^[A-ZÁÉÍÓÚÑ'][a-záéíóúñ]{2,}$/.test(palabra) && 
                 palabra.length > 2 && 
                 !['Para', 'Quiero', 'Hola', 'Buenos', 'Días'].includes(palabra)) {
               nombre = palabra;
@@ -952,7 +989,6 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     
     // Verificar disponibilidad
     const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
-    // ======= CAMBIO APLICADO AQUÍ =======
     const check = await verificarDisponibilidad(fecha, hora, duracionMin);
     if (!check.disponible) {
       console.log('[❌ AUTO-CITA] Horario no disponible');
@@ -990,7 +1026,7 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
     // 🔥 NOTIFICAR AL DUEÑO
     console.log('[🔥 AUTO-CITA] Notificando al dueño...');
     await notificarDueno(
-      `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n🔧 ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
+      `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n✂️ ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
       chatId
     );
     
@@ -1040,7 +1076,7 @@ async function manejarCancelacionDirecta(userMessage, chatId) {
         // Notificar al dueño
         console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
         await notificarDueno(
-          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n🔧 ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
+          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n✂️ ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
           chatId
         );
         
@@ -1205,7 +1241,7 @@ async function programarConfirmacion(booking) {
         chatId: booking.chatId, 
         scheduledFor: when.toISO(), 
         type: 'confirmation', 
-        message: `👋 Hola ${booking.nombreCliente}! Te recordamos tu cita de *${booking.servicio}* hoy a las ${formatearHora(booking.hora_inicio)}.\n\n¿Confirmas que asistirás? Responde *SÍ* o *NO*.`, 
+        message: `👋 Hola ${booking.nombreCliente}! Te recordamos tu cita de *${booking.servicio}* hoy a las ${formatearHora(booking.hora_inicio)}.\n\n¿Confirmas que asistirás? Responde *SI* o *NO*.`, 
         bookingId: booking.id 
       });
       await writeScheduledMessages(messages); 
@@ -1374,7 +1410,7 @@ async function mostrarReservas(chatId) {
       const fechaLegible = fechaDT.setLocale('es').toFormat('EEEE d \'de\' MMMM');
       
       mensaje += `${index + 1}. 👤 *${cita.nombreCliente}*\n`;
-      mensaje += `   🔧 ${cita.servicio}\n`;
+      mensaje += `   ✂️ ${cita.servicio}\n`;
       mensaje += `   📆 ${fechaLegible}\n`;
       mensaje += `   ⏰ ${formatearHora(cita.hora_inicio)}\n\n`;
     });
