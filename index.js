@@ -572,8 +572,11 @@ async function procesarTags(mensaje, chatId) {
 
   if (bookingMatch) {
     try {
-    
-      const bookingData = JSON.parse(bookingMatch[1]);
+      // 🔥 FIX: Convertir comillas simples a dobles para robustez
+      let jsonStr = bookingMatch[1].replace(/'/g, '"');
+      console.log('[📋 BOOKING] JSON raw:', jsonStr);
+      
+      const bookingData = JSON.parse(jsonStr);
     
     // 🔥 VALIDAR HORA (9 AM - 8 PM)
     const [h, m] = bookingData.hora_inicio.split(':').map(Number);
@@ -638,10 +641,28 @@ async function procesarTags(mensaje, chatId) {
       await programarResena(bookingData);
       await programarExtranamos(bookingData);
       
-      await notificarDueno(
-        `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
-        chatId
-      );
+      // 🔥 FIX: Notificación robusta al dueño
+      console.log('[📢 NOTIF] Enviando notificación al owner:', OWNER_CHAT_ID);
+      try {
+        await notificarDueno(
+          `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+          chatId
+        );
+        console.log('[✅ NOTIF] Notificación enviada exitosamente');
+      } catch (notifError) {
+        console.error('[❌ NOTIF] Error enviando notificación:', notifError.message);
+        // Intentar de nuevo con timeout
+        setTimeout(async () => {
+          try {
+            await notificarDueno(
+              `📅 *Nueva cita (reintento)*\n👤 ${bookingData.nombreCliente}\n🔧 ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
+              chatId
+            );
+          } catch (e) {
+            console.error('[❌ NOTIF] Reintento falló:', e.message);
+          }
+        }, 2000);
+      }
       
       console.log('✅ Booking guardado:', bookingData.id);
     } catch (e) { 
@@ -652,7 +673,11 @@ async function procesarTags(mensaje, chatId) {
 
   if (cancelMatch) {
     try {
-      const cancelData = JSON.parse(cancelMatch[1]);
+      // 🔥 FIX: Convertir comillas simples a dobles
+      let jsonStr = cancelMatch[1].replace(/'/g, '"');
+      console.log('[🗑️ CANCEL] JSON raw:', jsonStr);
+      
+      const cancelData = JSON.parse(jsonStr);
       console.log('[🔥 CANCELACIÓN] Datos recibidos:', JSON.stringify(cancelData, null, 2));
       
       const bookings = await readBookings();
@@ -808,10 +833,35 @@ async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, c
       // Buscar servicio
       if (!servicio) {
         for (const srv of serviciosValidos) {
-          if (texto.includes(srv.toLowerCase()) || 
-              texto.includes(srv.toLowerCase().replace(' ', ''))) {
+          const srvLower = srv.toLowerCase();
+          // Buscar coincidencias exactas o por palabras clave
+          if (texto.includes(srvLower) || 
+              texto.includes(srvLower.replace(' ', ''))) {
             servicio = srv;
-            console.log('[🔍 AUTO-CITA] Servicio encontrado:', servicio);
+            console.log('[🔍 AUTO-CITA] Servicio encontrado (exacto):', servicio);
+            break;
+          }
+          
+          // 🔥 FIX: Buscar por palabras clave individuales
+          const palabrasClave = srvLower.split(' ');
+          const tieneTodasLasPalabras = palabrasClave.every(p => texto.includes(p));
+          if (tieneTodasLasPalabras) {
+            servicio = srv;
+            console.log('[🔍 AUTO-CITA] Servicio encontrado (keywords):', servicio);
+            break;
+          }
+          
+          // 🔥 FIX: Si menciona solo "corte", asignar "corte clásico"
+          if (texto.includes('corte') && srvLower.includes('corte') && srvLower.includes('clásico')) {
+            servicio = srv;
+            console.log('[🔍 AUTO-CITA] Servicio asumido (corte -> corte clásico):', servicio);
+            break;
+          }
+          
+          // Si menciona "barba" sola, asignar "barba completa"
+          if (texto.includes('barba') && !texto.includes('corte') && srvLower === 'barba completa') {
+            servicio = srv;
+            console.log('[🔍 AUTO-CITA] Servicio asumido (barba -> barba completa):', servicio);
             break;
           }
         }
@@ -1768,24 +1818,31 @@ ${citasUsuarioTxt}
 5. Si no te han dado nombre, pide nombre completo
 6. 🚨🚨🚨 CUANDO CONFIRMES LA CITA, DEBES EMITIR EL TAG EN LA MISMA RESPUESTA:
    
+   🔥 CRÍTICO: USA **COMILLAS DOBLES** ("), NUNCA COMILLAS SIMPLES (')
+   
    Ejemplo CORRECTO:
-   "Listo, José! Te agendé corte mañana 24 de octubre a las 10:30 AM. <BOOKING:{\"nombreCliente\":\"José\",\"servicio\":\"corte clásico\",\"fecha\":\"2025-10-24\",\"hora_inicio\":\"10:30\"}>"
+   "Listo, José! Te agendé corte mañana 24 de octubre a las 10:30 AM. <BOOKING:{\\"nombreCliente\\":\\"José\\",\\"servicio\\":\\"corte clásico\\",\\"fecha\\":\\"2025-10-24\\",\\"hora_inicio\\":\\"10:30\\"}>"
+   
+   Ejemplo INCORRECTO (¡NO HAGAS ESTO!):
+   <BOOKING:{'nombreCliente':'José',...}> ❌ ESTO FALLARÁ
    
    🚨 SIN EL TAG, LA CITA NO SE GUARDA. ES OBLIGATORIO INCLUIRLO.
+   🚨 USA COMILLAS DOBLES (") EN TODO EL JSON, NO COMILLAS SIMPLES (')
 
 **🚨 REGLAS CRÍTICAS PARA CANCELAR - DEBES SEGUIRLAS SIEMPRE:**
 1. Si el cliente pide cancelar, pregunta: "¿Me confirmas que quieres cancelar la cita de [fecha] a las [hora]?"
 2. Cuando el cliente confirme (dice "sí", "confirmo", "dale", etc.), INMEDIATAMENTE emite el tag:
-   <CANCELLED:{"nombreCliente":"(nombre EXACTO de la cita)","fecha":"YYYY-MM-DD","hora_inicio":"HH:MM"}>
+   <CANCELLED:{\\"nombreCliente\\":\\"(nombre EXACTO de la cita)\\",\\"fecha\\":\\"YYYY-MM-DD\\",\\"hora_inicio\\":\\"HH:MM\\"}>
 3. **CRÍTICO:** Debes emitir el tag <CANCELLED:...> EN LA MISMA RESPUESTA donde confirmas la cancelación
 4. **FORMATO OBLIGATORIO:** fecha="YYYY-MM-DD" y hora_inicio="HH:MM" en formato 24h
 5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)
+6. 🔥 USA COMILLAS DOBLES ("), NO SIMPLES (')
 
 **EJEMPLO CORRECTO DE CANCELACIÓN:**
 User: "quiero cancelar mi cita"
 Bot: "Claro, ¿me confirmas que quieres cancelar la cita del 2025-10-24 a las 11:00 AM?"
 User: "sí"
-Bot: "Listo, tu cita ha sido cancelada. <CANCELLED:{"nombreCliente":"Zapata el duende","fecha":"2025-10-24","hora_inicio":"11:00"}>"
+Bot: "Listo, tu cita ha sido cancelada. <CANCELLED:{\\"nombreCliente\\":\\"Zapata el duende\\",\\"fecha\\":\\"2025-10-24\\",\\"hora_inicio\\":\\"11:00\\"}>"
 
 **⏰ HORARIOS DISPONIBLES HOY:**
 ${slotsDisponiblesHoyTxt}
