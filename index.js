@@ -95,9 +95,87 @@ app.get('/', (req, res) => res.send('✅ Cortex AI Bot is running! 🤖'));
 
 app.get('/qr', async (req, res) => {
   if (!latestQR) {
+    // 🔥 Check if client is already authenticated
+    const isAuthenticated = client && client.info && client.info.wid;
+    
+    if (isAuthenticated) {
+      return res.send(`
+        <!DOCTYPE html><html><head>
+          <title>Cortex AI Bot - Ya Conectado</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              background: #1a1a1a;
+              color: #fff;
+              padding: 20px;
+              margin: 0;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+            }
+            .container { text-align: center; max-width: 500px; }
+            h1 { color: #00ff00; margin-bottom: 20px; font-size: 28px; }
+            .status {
+              background: rgba(0, 255, 0, 0.1);
+              border: 2px solid #00ff00;
+              padding: 30px;
+              border-radius: 15px;
+              margin: 20px 0;
+            }
+            .checkmark {
+              font-size: 64px;
+              color: #00ff00;
+              margin-bottom: 20px;
+            }
+            .info {
+              background: rgba(255, 255, 255, 0.1);
+              padding: 20px;
+              border-radius: 10px;
+              margin-top: 20px;
+              text-align: left;
+              line-height: 1.8;
+            }
+            .warning {
+              background: rgba(255, 200, 0, 0.2);
+              border-left: 4px solid #ffc800;
+              padding: 15px;
+              margin-top: 15px;
+              border-radius: 5px;
+              text-align: left;
+            }
+          </style>
+        </head><body>
+          <div class="container">
+            <h1>✅ CORTEX AI BOT</h1>
+            <div class="status">
+              <div class="checkmark">✓</div>
+              <h2 style="color: #00ff00; margin: 0;">Sesión Activa</h2>
+              <p style="margin-top: 10px; color: #ccc;">Tu WhatsApp ya está conectado</p>
+            </div>
+            <div class="info">
+              <strong>📱 Estado de la conexión:</strong>
+              <ul style="padding-left: 20px; margin: 10px 0;">
+                <li>✅ Cliente de WhatsApp: <strong>Conectado</strong></li>
+                <li>✅ Sesión autenticada: <strong>Activa</strong></li>
+                <li>✅ Bot funcionando: <strong>24/7</strong></li>
+              </ul>
+            </div>
+            <div class="warning">
+              <strong>💡 Nota:</strong><br>
+              No necesitas escanear el QR porque tu sesión ya está activa. El bot está respondiendo mensajes automáticamente.
+            </div>
+          </div>
+        </body></html>
+      `);
+    }
+    
+    // Still initializing
     return res.send(`
       <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - QR Code</title>
+        <title>Cortex AI Bot - Iniciando</title>
         <meta http-equiv="refresh" content="3">
         <style>
           body {
@@ -111,11 +189,28 @@ app.get('/qr', async (req, res) => {
             text-align: center;
             padding: 20px;
           }
+          .spinner {
+            border: 4px solid rgba(0, 255, 0, 0.1);
+            border-top: 4px solid #0f0;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
         </style>
       </head><body>
         <div>
-          <h2>⏳ Generando código QR...</h2>
-          <p>El bot está iniciando. La página se actualizará automáticamente.</p>
+          <div class="spinner"></div>
+          <h2>⏳ Iniciando Cortex AI Bot...</h2>
+          <p>Generando código QR. La página se actualizará automáticamente.</p>
+          <p style="font-size: 12px; margin-top: 20px; opacity: 0.7;">
+            Si esto toma más de 30 segundos, verifica los logs del servidor.
+          </p>
         </div>
       </body></html>
     `);
