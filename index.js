@@ -13,6 +13,10 @@ const OpenAI = require('openai');
 const { DateTime } = require('luxon');
 const express = require('express');
 
+// 🔥 MULTI-BARBERO: Módulos de gestión de barberos
+const barberManager = require('./barberManager');
+const confirmationManager = require('./confirmationManager');
+
 // ========== CONFIGURACIÓN ==========
 let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554';
 let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
@@ -682,6 +686,63 @@ async function procesarTags(mensaje, chatId) {
       
       const bookingData = JSON.parse(jsonStr);
     
+    // 🔥 MULTI-BARBERO: Obtener y asignar barbero
+    const state = getUserState(chatId);
+    let barber = null;
+    let barberMessage = '';
+    
+    if (state.preferredBarberId) {
+      // Cliente pidió un barbero específico
+      barber = barberManager.getBarberById(state.preferredBarberId);
+      
+      if (!barber) {
+        console.log(`⚠️  Barbero preferido ${state.preferredBarberId} no encontrado`);
+        return mensaje.replace(
+          bookingMatch[0],
+          '\n\n⚠️ El barbero que pediste no está disponible. ¿Quieres con otro?'
+        );
+      }
+      
+      // Verificar disponibilidad del barbero preferido
+      const dayOfWeek = barberManager.getDayOfWeekFromDate(bookingData.fecha);
+      const isAvailable = barberManager.isBarberAvailable(
+        barber,
+        bookingData.fecha,
+        bookingData.hora_inicio,
+        dayOfWeek
+      );
+      
+      if (!isAvailable) {
+        console.log(`❌ ${barber.name} no disponible en ${bookingData.fecha} ${bookingData.hora_inicio}`);
+        return mensaje.replace(
+          bookingMatch[0],
+          `\n\n⚠️ ${barber.name} no está disponible en ese horario. ¿Quieres con otro barbero o prefieres otra hora?`
+        );
+      }
+      
+      barberMessage = `con ${barber.name}`;
+      
+    } else {
+      // Asignar automáticamente (load balancing)
+      barber = barberManager.getAvailableBarber(bookingData.fecha, bookingData.hora_inicio);
+      
+      if (!barber) {
+        console.log('❌ No hay barberos disponibles');
+        return mensaje.replace(
+          bookingMatch[0],
+          '\n\n⚠️ No hay barberos disponibles en ese horario. ¿Te parece otra hora?'
+        );
+      }
+      
+      barberMessage = `Te asigné con ${barber.name}`;
+    }
+    
+    // Agregar info del barbero al booking
+    bookingData.barber_id = barber.id;
+    bookingData.barber_name = barber.name;
+    bookingData.status = 'pending';
+    bookingData.confirmed_by_barber = false;
+    
     // 🔥 VALIDAR HORA (9 AM - 8 PM)
     const [h, m] = bookingData.hora_inicio.split(':').map(Number);
     if (h < 9 || h >= 20) {
@@ -717,65 +778,20 @@ async function procesarTags(mensaje, chatId) {
       bookingData.id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       bookingData.chatId = chatId;
       bookingData.createdAt = new Date().toISOString();
-      bookingData.status = 'confirmed';
+      bookingData.client_phone = chatId.replace('@c.us', '');
 
-      const bookings = await readBookings();
+      // 🔥 MULTI-BARBERO: Crear confirmación pendiente en lugar de guardar directamente
+      await confirmationManager.createConfirmation(bookingData, barber, chatId);
       
-      if (!Array.isArray(bookings)) {
-        console.error('⚠️ bookings no es un array, reinicializando...');
-        await writeBookings([bookingData]);
-      } else {
-        bookings.push(bookingData);
-        await writeBookings(bookings);
-      }
-
-      const reservas = await readReservas();
-      reservas[bookingData.fecha] = reservas[bookingData.fecha] || [];
+      console.log(`📋 Cita pendiente creada con ${barber.name}`);
       
-      for (const slot of check.slots) {
-        if (!reservas[bookingData.fecha].includes(slot)) {
-          reservas[bookingData.fecha].push(slot);
-        }
-      }
+      // Modificar el mensaje para informar al cliente
+      const mensajeModificado = mensaje.replace(
+        bookingMatch[0],
+        `\n\n${barberMessage}. Estoy confirmando con el barbero... te aviso en unos segundos ⏳`
+      );
       
-      await writeReservas(reservas);
-
-      await programarConfirmacion(bookingData);
-      await programarRecordatorio(bookingData);
-      await programarResena(bookingData);
-      await programarExtranamos(bookingData);
-      
-      // 🔥 FIX: Notificación robusta al dueño
-      console.log('[📢 NOTIF] ========================================');
-      console.log('[📢 NOTIF] INTENT TO NOTIFY OWNER');
-      console.log('[📢 NOTIF] Owner Chat ID:', OWNER_CHAT_ID);
-      console.log('[📢 NOTIF] From Chat ID:', chatId);
-      console.log('[📢 NOTIF] Client Ready:', !!client?.info);
-      console.log('[📢 NOTIF] Booking:', bookingData.id);
-      console.log('[📢 NOTIF] ========================================');
-      
-      try {
-        await notificarDueno(
-          `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
-          chatId
-        );
-        console.log('[✅ NOTIF] Notificación enviada exitosamente');
-      } catch (notifError) {
-        console.error('[❌ NOTIF] Error enviando notificación:', notifError.message);
-        // Intentar de nuevo con timeout
-        setTimeout(async () => {
-          try {
-            await notificarDueno(
-              `📅 *Nueva cita (reintento)*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
-              chatId
-            );
-          } catch (e) {
-            console.error('[❌ NOTIF] Reintento falló:', e.message);
-          }
-        }, 2000);
-      }
-      
-      console.log('✅ Booking guardado:', bookingData.id);
+      return mensajeModificado;
     } catch (e) { 
       console.error('BOOKING parse error:', e); 
     }
@@ -1859,6 +1875,134 @@ async function chatWithAI(userMessage, userId, chatId) {
     return await comandoSetOwner(args, chatId);
   }
 
+  // 🔥 MULTI-BARBERO: Comandos de gestión de barberos
+  if (msgLower === '/barbers') {
+    const stats = barberManager.getStats();
+    
+    let texto = '👥 *BARBEROS REGISTRADOS*\n\n';
+    
+    for (const barber of barberManager.barbers) {
+      const status = barber.available ? '🟢 Disponible' : '🔴 No disponible';
+      texto += `*${barber.name}*\n`;
+      texto += `   ${status}\n`;
+      texto += `   📱 ${barber.phone}\n`;
+      texto += `   📊 Citas hoy: ${barber.bookingsToday || 0}\n`;
+      texto += `   📈 Total: ${barber.stats?.totalBookings || 0}\n`;
+      texto += `   ⭐ Rating: ${barber.stats?.averageRating || 5.0}\n\n`;
+    }
+    
+    texto += `\n📊 *RESUMEN*\n`;
+    texto += `Total: ${stats.totalBarbers}\n`;
+    texto += `Disponibles: ${stats.availableBarbers}\n`;
+    texto += `Citas hoy: ${stats.totalBookingsToday}`;
+    
+    return texto;
+  }
+  
+  if (msgLower.startsWith('/add barber')) {
+    if (chatId !== OWNER_CHAT_ID) {
+      return '❌ Solo el dueño puede agregar barberos';
+    }
+    
+    const parts = userMessage.split(' ').slice(2).join(' ').split(',');
+    
+    if (parts.length < 3) {
+      return 'Formato:\n/add barber Nombre,+57300xxx,Alias1|Alias2';
+    }
+    
+    const [name, phone, aliasesRaw] = parts.map(p => p.trim());
+    const nicknames = aliasesRaw.split('|').map(a => a.trim());
+    
+    await barberManager.addBarber({
+      name,
+      phone,
+      nicknames
+    });
+    
+    return `✅ Barbero *${name}* agregado correctamente!\n📱 ${phone}`;
+  }
+  
+  if (msgLower.startsWith('/toggle')) {
+    const barberName = userMessage.split(' ').slice(1).join(' ').trim();
+    
+    if (!barberName) {
+      return 'Formato: /toggle NombreBarbero';
+    }
+    
+    const barber = barberManager.getBarberByName(barberName);
+    
+    if (!barber) {
+      return `❌ Barbero "${barberName}" no encontrado`;
+    }
+    
+    const newStatus = await barberManager.toggleAvailability(barber.id);
+    const statusText = newStatus ? '🟢 DISPONIBLE' : '🔴 NO DISPONIBLE';
+    
+    return `✅ ${barber.name} ahora está *${statusText}*`;
+  }
+  
+  if (msgLower === '/today') {
+    const bookings = await readBookings();
+    const hoy = now().toFormat('yyyy-MM-dd');
+    const citasHoy = bookings.filter(b => b.fecha === hoy);
+    
+    if (citasHoy.length === 0) {
+      return '📅 No hay citas agendadas para hoy';
+    }
+    
+    const porBarbero = {};
+    
+    for (const cita of citasHoy) {
+      const barberId = cita.barber_id || 'sin_asignar';
+      if (!porBarbero[barberId]) {
+        porBarbero[barberId] = [];
+      }
+      porBarbero[barberId].push(cita);
+    }
+    
+    let texto = `📅 *CITAS HOY (${hoy})*\n\n`;
+    
+    for (const [barberId, citas] of Object.entries(porBarbero)) {
+      const barberName = citas[0].barber_name || 'Sin asignar';
+      texto += `💈 *${barberName}* (${citas.length} citas)\n`;
+      
+      const citasOrdenadas = citas.sort((a, b) => 
+        a.hora_inicio.localeCompare(b.hora_inicio)
+      );
+      
+      for (const cita of citasOrdenadas) {
+        const statusIcon = cita.confirmed_by_barber ? '✅' : '⏳';
+        texto += `   ${statusIcon} ${formatearHora(cita.hora_inicio)} - ${cita.nombreCliente} (${cita.servicio})\n`;
+      }
+      texto += '\n';
+    }
+    
+    return texto;
+  }
+  
+  if (msgLower === '/stats') {
+    const barberStats = barberManager.getStats();
+    const confirmStats = confirmationManager.getStats();
+    
+    return `
+📊 *ESTADÍSTICAS DEL SISTEMA*
+
+👥 *BARBEROS*
+Total: ${barberStats.totalBarbers}
+Disponibles: ${barberStats.availableBarbers}
+Citas hoy: ${barberStats.totalBookingsToday}
+Citas totales: ${barberStats.totalBookingsAll}
+
+✅ *CONFIRMACIONES*
+Total: ${confirmStats.total}
+Pendientes: ${confirmStats.pending}
+Confirmadas: ${confirmStats.confirmed}
+Rechazadas: ${confirmStats.rejected}
+Expiradas: ${confirmStats.expired}
+Tasa confirmación: ${confirmStats.confirmationRate}%
+    `.trim();
+  }
+
   if (!state.botEnabled) return null;
 
   if (msgLower.includes('/start test')) { 
@@ -1883,6 +2027,17 @@ async function chatWithAI(userMessage, userId, chatId) {
   let systemPrompt = '';
   
   if (state.mode === 'demo') {
+    // 🔥 MULTI-BARBERO: Detectar barbero preferido en el mensaje
+    if (!state.preferredBarberId) {
+      const preferredBarber = barberManager.detectPreferredBarber(userMessage);
+      
+      if (preferredBarber) {
+        state.preferredBarberId = preferredBarber.id;
+        state.preferredBarberName = preferredBarber.name;
+        console.log(`🎯 [ChatWithAI] Barbero preferido detectado: ${preferredBarber.name}`);
+      }
+    }
+    
     const hoy = now(); 
     const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
     const fechaISO = hoy.toFormat('yyyy-MM-dd');
@@ -2088,10 +2243,17 @@ client.on('ready', async () => {
   await cargarConfigBarberia();
   await cargarVentasPrompt();
   
+  // 🔥 MULTI-BARBERO: Inicializar sistema de barberos
+  await barberManager.loadBarbers();
+  confirmationManager.setClient(client);
+  await confirmationManager.loadConfirmations();
+  confirmationManager.startExpirationCheck();
+  
   console.log('📝 Estado de archivos:');
   console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
   console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
   console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
+  console.log(`  - Barberos: ${barberManager.barbers.length} cargados`);
 });
 
 client.on('message', async (message) => {
@@ -2148,6 +2310,80 @@ client.on('message', async (message) => {
     
     if (!state.botEnabled && !esComandoEspecial) {
       return;
+    }
+
+    // 🔥 MULTI-BARBERO: Verificar si es un barbero respondiendo a una confirmación
+    const barberResponse = await confirmationManager.processBarberResponse(
+      userId,
+      processedMessage || userMessage
+    );
+    
+    if (barberResponse) {
+      const { confirmation, confirmed, barber } = barberResponse;
+      
+      if (confirmed) {
+        // ✅ Barbero CONFIRMÓ la cita
+        console.log(`✅ ${barber.name} confirmó cita de ${confirmation.booking.nombreCliente}`);
+        
+        // Guardar cita confirmada
+        const bookings = await readBookings();
+        confirmation.booking.status = 'confirmed';
+        confirmation.booking.confirmed_by_barber = true;
+        confirmation.booking.confirmed_at = new Date().toISOString();
+        
+        if (!Array.isArray(bookings)) {
+          await writeBookings([confirmation.booking]);
+        } else {
+          bookings.push(confirmation.booking);
+          await writeBookings(bookings);
+        }
+        
+        // Actualizar reservas
+        const reservas = await readReservas();
+        reservas[confirmation.booking.fecha] = reservas[confirmation.booking.fecha] || [];
+        const duracionMin = BARBERIA_CONFIG?.servicios?.[confirmation.booking.servicio]?.min || 40;
+        const check = await verificarDisponibilidad(
+          confirmation.booking.fecha,
+          confirmation.booking.hora_inicio,
+          duracionMin
+        );
+        
+        for (const slot of check.slots) {
+          if (!reservas[confirmation.booking.fecha].includes(slot)) {
+            reservas[confirmation.booking.fecha].push(slot);
+          }
+        }
+        await writeReservas(reservas);
+        
+        // Programar recordatorios
+        await programarConfirmacion(confirmation.booking);
+        await programarRecordatorio(confirmation.booking);
+        await programarResena(confirmation.booking);
+        await programarExtranamos(confirmation.booking);
+        
+        // Actualizar estadísticas del barbero
+        await barberManager.incrementBookingCount(confirmation.barber_id);
+        
+        // Responder al barbero
+        await humanDelay();
+        await message.reply('✅ Perfecto! Le confirmé la cita al cliente.');
+        
+      } else {
+        // ❌ Barbero RECHAZÓ la cita
+        console.log(`❌ ${barber.name} rechazó cita de ${confirmation.booking.nombreCliente}`);
+        
+        // Responder al barbero
+        await humanDelay();
+        await message.reply('👍 Entendido, buscando otra opción para el cliente.');
+        
+        // Reasignar automáticamente
+        await confirmationManager.reassignBooking(confirmation);
+      }
+      
+      // Notificar al cliente del resultado
+      await confirmationManager.notifyClient(confirmation, confirmed);
+      
+      return; // ⚠️ IMPORTANTE: No continuar con chatWithAI para barberos
     }
 
     // 🔥 NUEVO: Intentar manejar cancelación directamente (sin OpenAI)
