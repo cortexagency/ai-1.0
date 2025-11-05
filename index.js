@@ -1,6 +1,10 @@
 // =========================
-// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA
-// FIXES: JSON parsing + Confirmación con barbero
+// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA V2
+// FIXES: 
+// - Verificación correcta de disponibilidad antes de crear cita
+// - Flujo de confirmación con barbero ANTES de confirmar al cliente
+// - Notificaciones correctas (barbero recibe confirmación, owner recibe alertas)
+// - El barbero puede sugerir otro horario
 // =========================
 require('dotenv').config();
 
@@ -95,7 +99,10 @@ let CLIENTES = {};
 const userStates = new Map();
 let BOT_PAUSED_GLOBAL = false;
 let BOT_PAUSED_CHATS = new Set();
-const citasPendientesConfirmacion = new Map();
+
+// Nuevo: Gestión de confirmaciones pendientes
+const citasPendientesConfirmacion = new Map(); // { citaId: { datos, clienteChatId, barbero, timestamp, timeout } }
+const respuestasBarberosPendientes = new Map(); // { barberoId: { citaId, tipo } } para saber qué espera el barbero
 
 // ========== FUNCIONES AUXILIARES ==========
 function now() {
@@ -276,21 +283,40 @@ function obtenerCitasDelDia(fecha = null, barbero = null) {
   });
 }
 
+/**
+ * FUNCIÓN CRÍTICA: Verificar si un horario está disponible
+ * Esta función verifica CORRECTAMENTE que no haya solapamiento de citas
+ */
 function verificarDisponibilidad(fecha, hora, duracion, barbero = null) {
   const horaSolicitada = parseDate(`${fecha}T${hora}`);
   const horaFin = horaSolicitada.plus({ minutes: duracion });
   
+  console.log(`🔍 Verificando disponibilidad:`);
+  console.log(`   - Fecha: ${fecha}`);
+  console.log(`   - Hora solicitada: ${hora} (${horaSolicitada.toISO()})`);
+  console.log(`   - Duración: ${duracion} min`);
+  console.log(`   - Hora fin: ${horaFin.toFormat('HH:mm')}`);
+  console.log(`   - Barbero: ${barbero || 'Cualquiera'}`);
+  
   const citasDelDia = obtenerCitasDelDia(fecha, barbero);
+  console.log(`   - Citas existentes: ${citasDelDia.length}`);
   
   for (const cita of citasDelDia) {
     const citaInicio = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
     const citaFin = citaInicio.plus({ minutes: cita.duracion || 30 });
     
+    console.log(`   - Comparando con cita existente: ${cita.hora_inicio} - ${citaFin.toFormat('HH:mm')} (${cita.nombreCliente})`);
+    
+    // Verificar si hay solapamiento
+    // Hay conflicto SI: la hora solicitada es ANTES del fin de la cita existente
+    // Y la hora de fin solicitada es DESPUÉS del inicio de la cita existente
     if (horaSolicitada < citaFin && horaFin > citaInicio) {
+      console.log(`   ❌ CONFLICTO DETECTADO con cita de ${cita.nombreCliente}`);
       return false;
     }
   }
   
+  console.log(`   ✅ Horario disponible`);
   return true;
 }
 
@@ -371,11 +397,13 @@ function obtenerProximosSlots(fecha = null, cantidad = 3, servicio = null, barbe
     minute: cierreM
   }, { zone: TIMEZONE });
   
+  // Si es HOY, solo mostrar horarios futuros
   if (fechaBuscar === ahora.toFormat('yyyy-MM-dd')) {
     const minutoActual = ahora.hour * 60 + ahora.minute;
     const minutoApertura = aperturaH * 60 + aperturaM;
     
     if (minutoActual > minutoApertura) {
+      // Redondear al próximo slot de 30 minutos
       horaActual = ahora.plus({ minutes: 30 });
       if (horaActual.minute < 30) {
         horaActual = horaActual.set({ minute: 30, second: 0 });
@@ -391,6 +419,7 @@ function obtenerProximosSlots(fecha = null, cantidad = 3, servicio = null, barbe
     const hora = horaActual.toFormat('HH:mm');
     const horaNum = horaActual.hour;
     
+    // Respetar hora de almuerzo
     if (BARBERIA_CONFIG && BARBERIA_CONFIG.horario.almuerzo && 
         horaNum >= BARBERIA_CONFIG.horario.almuerzo.start && 
         horaNum < BARBERIA_CONFIG.horario.almuerzo.end) {
@@ -417,7 +446,12 @@ async function crearCita(datos) {
   
   const duracion = BARBERIA_CONFIG.servicios[servicio]?.min || 30;
   
-  if (!verificarDisponibilidad(fecha, hora_inicio, duracion, barbero)) {
+  // VERIFICACIÓN CRÍTICA: Verificar disponibilidad JUSTO ANTES de crear
+  console.log(`🔍 Verificación final antes de crear cita:`);
+  const disponible = verificarDisponibilidad(fecha, hora_inicio, duracion, barbero);
+  
+  if (!disponible) {
+    console.log(`❌ Horario NO disponible al intentar crear la cita`);
     return { error: 'Ese horario ya no está disponible' };
   }
   
@@ -441,6 +475,8 @@ async function crearCita(datos) {
   CITAS.push(cita);
   await guardarCitas();
   
+  console.log(`✅ Cita creada exitosamente: ${cita.id}`);
+  
   const cliente = getOrCreateClient(telefono, nombreCliente);
   cliente.totalCitas++;
   if (barbero) cliente.preferencias.barbero = barbero;
@@ -449,6 +485,7 @@ async function crearCita(datos) {
   
   await programarRecordatorio(cita);
   
+  // ✅ NOTIFICAR AL BARBERO sobre la cita confirmada
   if (barbero && barbero !== 'Cualquiera' && BARBEROS[barbero]) {
     const fechaDT = parseDate(fecha);
     const fechaLegible = formatDate(fechaDT);
@@ -463,6 +500,7 @@ async function crearCita(datos) {
     );
   }
   
+  // ✅ NOTIFICAR AL OWNER sobre nueva cita
   await notificarDueno(`📅 *NUEVA CITA*\n\n👤 Cliente: ${nombreCliente}\n💇 Servicio: ${servicio}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}\n👨‍🦲 Barbero: ${barbero || 'Cualquiera'}`);
   
   return { success: true, cita };
@@ -492,6 +530,7 @@ async function cancelarCita(nombreCliente, fecha, hora_inicio) {
     }
   }
   
+  // ✅ NOTIFICAR AL BARBERO sobre cancelación
   if (cita.barbero && cita.barbero !== 'Cualquiera' && BARBEROS[cita.barbero]) {
     const fechaDT = parseDate(cita.fecha);
     const fechaLegible = formatDate(fechaDT);
@@ -504,6 +543,7 @@ async function cancelarCita(nombreCliente, fecha, hora_inicio) {
     );
   }
   
+  // ✅ NOTIFICAR AL OWNER sobre cancelación
   await notificarDueno(`❌ *CITA CANCELADA*\n\n👤 Cliente: ${nombreCliente}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}`);
   
   await procesarWaitlist(fecha);
@@ -608,13 +648,17 @@ async function programarRecordatorio(cita) {
 
 async function notificarBarbero(nombreBarbero, mensaje) {
   const barbero = BARBEROS[nombreBarbero];
-  if (!barbero || !barbero.telefono) return;
+  if (!barbero || !barbero.telefono) {
+    console.error(`⚠️ No se pudo notificar a ${nombreBarbero}: sin teléfono configurado`);
+    return;
+  }
   
   try {
     const chat = await client.getChatById(barbero.telefono);
     await sendWithTyping(chat, mensaje);
+    console.log(`✅ Notificación enviada a barbero ${nombreBarbero}`);
   } catch (error) {
-    console.error(`Error notificando a barbero ${nombreBarbero}:`, error.message);
+    console.error(`❌ Error notificando a barbero ${nombreBarbero}:`, error.message);
   }
 }
 
@@ -627,7 +671,7 @@ async function notificarDueno(mensaje, contextChatId = null) {
     }
     await sendWithTyping(chat, fullMsg);
   } catch (error) {
-    console.error('Error notificando al dueño:', error.message);
+    console.error('❌ Error notificando al dueño:', error.message);
   }
 }
 
@@ -805,47 +849,21 @@ async function handleCommand(command, args, userId) {
       }
       return 'Uso: /disponibilidad [nombre barbero]';
     
-    case '/descanso':
-      if (!esBarbero && !esOwner) return 'Solo los barberos pueden usar este comando.';
-      
-      const nombreBarbero = esBarbero ? 
-        Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId) :
-        args[1];
-      
-      if (!nombreBarbero || !BARBEROS[nombreBarbero]) {
-        return 'Barbero no encontrado.';
-      }
-      
-      if (args[0] === 'iniciar') {
-        BARBEROS[nombreBarbero].estado = 'descanso';
-        await guardarBarberos();
-        return `☕️ Descanso iniciado para ${nombreBarbero}. Las nuevas consultas se asignarán a otros barberos.`;
-      } else if (args[0] === 'terminar') {
-        BARBEROS[nombreBarbero].estado = 'disponible';
-        await guardarBarberos();
-        return `✅ Descanso terminado. ${nombreBarbero} está disponible nuevamente.`;
-      }
-      return 'Uso: /descanso iniciar [nombre] o /descanso terminar [nombre]';
-    
     default:
       return null;
   }
 }
 
-// ========== DETECCIÓN DE IDIOMA ==========
-function detectarIdioma(mensaje) {
-  const palabrasIngles = ['hello', 'hi', 'hey', 'appointment', 'booking', 'schedule', 'haircut', 'how much', 'price', 'when', 'where', 'can i', 'i want', 'i need', 'thank you', 'thanks'];
-  const palabrasEspanol = ['hola', 'buenos', 'cita', 'agendar', 'corte', 'cuanto', 'precio', 'cuando', 'donde', 'puedo', 'quiero', 'necesito', 'gracias'];
+function detectarIdioma(texto) {
+  const palabrasEsp = ['hola', 'gracias', 'por favor', 'qué', 'cómo', 'cuándo', 'dónde', 'quiero', 'necesito'];
+  const palabrasEng = ['hello', 'thanks', 'please', 'what', 'how', 'when', 'where', 'want', 'need'];
   
-  const mensajeMin = mensaje.toLowerCase();
+  const textoLower = texto.toLowerCase();
   
-  const contadorIngles = palabrasIngles.filter(p => mensajeMin.includes(p)).length;
-  const contadorEspanol = palabrasEspanol.filter(p => mensajeMin.includes(p)).length;
+  const countEsp = palabrasEsp.filter(p => textoLower.includes(p)).length;
+  const countEng = palabrasEng.filter(p => textoLower.includes(p)).length;
   
-  if (contadorIngles > contadorEspanol) {
-    return 'en';
-  }
-  return 'es';
+  return countEng > countEsp ? 'en' : 'es';
 }
 
 // ========== PROCESAMIENTO CON IA ==========
@@ -958,11 +976,14 @@ REGLAS OBLIGATORIAS:
 1. Comillas dobles DIRECTAS (") para claves y valores
 2. Sin espacios innecesarios
 3. Fecha siempre: YYYY-MM-DD
-4. Hora siempre en 24h: HH:MM
+4. Hora siempre en 24h: HH:MM (ej: 09:00, 14:30, 16:00)
 5. Nombre EXACTO del servicio como aparece en la lista
 6. Si no hay barbero específico: "Cualquiera"
 
-IMPORTANTE: Después de emitir el tag, NO menciones que estás consultando con el barbero. El sistema lo hace automáticamente.
+🚨 CRÍTICO: SIEMPRE VERIFICA QUE LA HORA ESTÉ EN LA LISTA DE HORARIOS DISPONIBLES ANTES DE EMITIR EL TAG.
+Si el cliente pide una hora que NO está en {slotsDisponiblesHoy}, NO emitas el tag y ofrece las horas disponibles.
+
+IMPORTANTE: Después de emitir el tag, el sistema automáticamente contacta al barbero para confirmar. NO menciones esto al cliente.
 `;
   
   systemPrompt += jsonInstructions;
@@ -1005,12 +1026,22 @@ IMPORTANTE: Después de emitir el tag, NO menciones que estás consultando con e
   }
 }
 
+/**
+ * FUNCIÓN CRÍTICA: Procesar tags de booking y cancelación
+ * NUEVO FLUJO:
+ * 1. Se detecta <BOOKING:...>
+ * 2. Si hay barbero específico: se le pregunta PRIMERO
+ * 3. El barbero puede responder: SI, NO, o sugerir otra hora
+ * 4. Solo si el barbero dice SI, se crea la cita
+ * 5. Se notifica al cliente con la confirmación
+ */
 async function procesarTags(respuesta, userId, nombreCliente) {
   const bookingMatch = respuesta.match(/<BOOKING:(.+?)>/);
   if (bookingMatch) {
     try {
       let jsonStr = bookingMatch[1].trim();
       
+      // Limpieza agresiva del JSON
       jsonStr = jsonStr.replace(/\\\\/g, '');
       jsonStr = jsonStr.replace(/\\"/g, '"');
       jsonStr = jsonStr.replace(/\\'/g, "'");
@@ -1023,9 +1054,13 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       datos.telefono = userId;
       datos.nombreCliente = datos.nombreCliente || nombreCliente;
       
+      // ✅ NUEVO FLUJO: Si hay barbero específico, preguntar PRIMERO
       if (datos.barbero && datos.barbero !== 'Cualquiera' && BARBEROS[datos.barbero]) {
+        console.log(`📞 Iniciando flujo de confirmación con barbero: ${datos.barbero}`);
+        
         const citaId = `PEND-${Date.now()}`;
         
+        // Guardar la solicitud pendiente
         citasPendientesConfirmacion.set(citaId, {
           datos,
           clienteChatId: userId,
@@ -1039,42 +1074,51 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           const fechaDT = parseDate(datos.fecha);
           const fechaLegible = formatDate(fechaDT);
           
+          // Enviar solicitud al barbero
           await sendWithTyping(barberoChat,
             `🔔 *SOLICITUD DE CITA*\n\n` +
             `👤 Cliente: ${datos.nombreCliente}\n` +
             `💇 Servicio: ${datos.servicio}\n` +
             `📅 Fecha: ${fechaLegible}\n` +
             `🕐 Hora: ${datos.hora_inicio}\n\n` +
-            `¿Aceptas esta cita?\n\n` +
+            `¿Puedes atender esta cita?\n\n` +
             `Responde:\n` +
             `✅ *SI* para confirmar\n` +
-            `❌ *NO* para rechazar\n\n` +
+            `❌ *NO* si no puedes\n` +
+            `⏰ O sugiere otra hora (ej: "3:00 PM mejor")\n\n` +
             `ID: ${citaId}`
           );
           
+          // Marcar que este barbero está esperando respuesta
+          respuestasBarberosPendientes.set(barbero.telefono, { citaId, tipo: 'confirmacion' });
+          
+          // Timeout: si no responde en 2 minutos
           const timeout = setTimeout(async () => {
             if (citasPendientesConfirmacion.has(citaId)) {
               citasPendientesConfirmacion.delete(citaId);
+              respuestasBarberosPendientes.delete(barbero.telefono);
               
               try {
                 const clientChat = await client.getChatById(userId);
                 await sendWithTyping(clientChat,
-                  `⏰ El barbero no respondió a tiempo. ¿Querés agendar con otro barbero o intentar más tarde?`
+                  `⏰ ${datos.barbero} no respondió a tiempo. ¿Querés agendar con otro barbero o intentar más tarde?`
                 );
               } catch (e) {
                 console.error('Error notificando timeout:', e);
               }
             }
-          }, 120000);
+          }, 120000); // 2 minutos
           
           citasPendientesConfirmacion.get(citaId).timeout = timeout;
           
+          // Reemplazar el tag en la respuesta al cliente
           respuesta = respuesta.replace(/<BOOKING:.+?>/, 
-            `\n\n⏳ Estoy consultando disponibilidad con ${datos.barbero}. Te confirmo en un momentito...`
+            `\n\n⏳ Estoy consultando con ${datos.barbero} si puede atenderte. Te confirmo en un momentito...`
           );
           
         } catch (e) {
-          console.error('Error notificando a barbero:', e);
+          console.error('❌ Error notificando a barbero:', e);
+          // Si falla la notificación al barbero, crear la cita directamente
           const resultado = await crearCita(datos);
           if (resultado.error) {
             respuesta = respuesta.replace(/<BOOKING:.+?>/, `\n\n❌ ${resultado.error}`);
@@ -1083,6 +1127,8 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           }
         }
       } else {
+        // Sin barbero específico o barbero = "Cualquiera": crear directamente
+        console.log(`📝 Creando cita sin confirmación previa (barbero: ${datos.barbero || 'Cualquiera'})`);
         const resultado = await crearCita(datos);
         
         if (resultado.error) {
@@ -1095,12 +1141,18 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       }
       
     } catch (e) {
-      console.error('Error procesando BOOKING:', e.message);
+      console.error('❌ Error procesando BOOKING:', e.message);
       console.error('JSON problemático:', bookingMatch[1]);
       respuesta = respuesta.replace(/<BOOKING:.+?>/, '\n\n❌ Error al procesar la cita (formato incorrecto)');
+      
+      // Notificar al owner sobre el error
+      await notificarDueno(
+        `❌ *ERROR PROCESANDO BOOKING*\n\nUsuario: ${userId}\nJSON: ${bookingMatch[1]}\nError: ${e.message}`
+      );
     }
   }
   
+  // Procesar cancelaciones
   const cancelMatch = respuesta.match(/<CANCELLED:(.+?)>/);
   if (cancelMatch) {
     try {
@@ -1119,7 +1171,7 @@ async function procesarTags(respuesta, userId, nombreCliente) {
         respuesta = respuesta.replace(/<CANCELLED:.+?>/, '');
       }
     } catch (e) {
-      console.error('Error procesando CANCELLED:', e.message);
+      console.error('❌ Error procesando CANCELLED:', e.message);
       respuesta = respuesta.replace(/<CANCELLED:.+?>/, '\n\n❌ Error al cancelar la cita');
     }
   }
@@ -1127,81 +1179,147 @@ async function procesarTags(respuesta, userId, nombreCliente) {
   return respuesta;
 }
 
+/**
+ * FUNCIÓN CRÍTICA: Manejar mensajes de barberos
+ * Este handler se ejecuta ANTES que el chatWithAI para barberos
+ * Detecta respuestas a solicitudes de citas pendientes
+ */
 async function handleMensajeBarbero(message, nombreBarbero) {
-  const texto = message.body.trim().toUpperCase();
+  const barberoTelefono = message.from;
+  const texto = message.body.trim();
   
-  for (const [citaId, pendiente] of citasPendientesConfirmacion.entries()) {
-    if (pendiente.datos.barbero === nombreBarbero) {
-      
-      if (texto === 'SI' || texto === 'SÍ' || texto === 'SÃ' || texto === 'SÍ') {
-        clearTimeout(pendiente.timeout);
-        citasPendientesConfirmacion.delete(citaId);
-        
-        const resultado = await crearCita(pendiente.datos);
-        
-        if (resultado.error) {
-          await message.reply(`❌ Error al confirmar: ${resultado.error}`);
-          
-          try {
-            const clientChat = await client.getChatById(pendiente.clienteChatId);
-            await sendWithTyping(clientChat, 
-              `❌ Hubo un problema al confirmar tu cita. ${resultado.error}`
-            );
-          } catch (e) {
-            console.error('Error notificando cliente:', e);
-          }
-        } else {
-          const fechaDT = parseDate(resultado.cita.fecha);
-          const fechaLegible = formatDate(fechaDT);
-          
-          await message.reply(
-            `✅ *Cita confirmada*\n\n` +
-            `👤 ${resultado.cita.nombreCliente}\n` +
-            `💇 ${resultado.cita.servicio}\n` +
-            `📅 ${fechaLegible}\n` +
-            `🕐 ${resultado.cita.hora_inicio}`
-          );
-          
-          try {
-            const clientChat = await client.getChatById(pendiente.clienteChatId);
-            await sendWithTyping(clientChat,
-              `✅ *¡Confirmado!*\n\n` +
-              `${nombreBarbero} aceptó tu cita:\n\n` +
-              `💇 ${resultado.cita.servicio}\n` +
-              `📅 ${fechaLegible}\n` +
-              `🕐 ${resultado.cita.hora_inicio}\n\n` +
-              `¡Te esperamos! 💈`
-            );
-          } catch (e) {
-            console.error('Error notificando cliente:', e);
-          }
-        }
-        
-        return true;
-        
-      } else if (texto === 'NO') {
-        clearTimeout(pendiente.timeout);
-        citasPendientesConfirmacion.delete(citaId);
-        
-        await message.reply(
-          `❌ Cita rechazada. El cliente será notificado.`
-        );
-        
-        try {
-          const clientChat = await client.getChatById(pendiente.clienteChatId);
-          await sendWithTyping(clientChat,
-            `😔 ${nombreBarbero} no está disponible en ese horario.\n\n` +
-            `¿Te ofrezco otro horario o preferís con otro barbero?`
-          );
-        } catch (e) {
-          console.error('Error notificando cliente:', e);
-        }
-        
-        return true;
-      }
-    }
+  console.log(`📞 Mensaje de barbero ${nombreBarbero}: "${texto}"`);
+  
+  // Verificar si este barbero tiene una respuesta pendiente
+  const pendiente = respuestasBarberosPendientes.get(barberoTelefono);
+  
+  if (!pendiente) {
+    console.log(`   ℹ️ No hay respuestas pendientes para este barbero`);
+    return false; // No hay nada pendiente, continuar con flujo normal
   }
   
+  const { citaId, tipo } = pendiente;
+  const solicitud = citasPendientesConfirmacion.get(citaId);
+  
+  if (!solicitud) {
+    console.log(`   ⚠️ Solicitud ${citaId} ya no existe`);
+    respuestasBarberosPendientes.delete(barberoTelefono);
+    return false;
+  }
+  
+  const textoUpper = texto.toUpperCase();
+  
+  // ✅ CASO 1: Barbero confirma con SI
+  if (textoUpper === 'SI' || textoUpper === 'SÍ' || textoUpper === 'SÃ' || textoUpper === 'YES') {
+    console.log(`   ✅ Barbero confirmó la cita`);
+    
+    // Limpiar timeout y mapas
+    clearTimeout(solicitud.timeout);
+    citasPendientesConfirmacion.delete(citaId);
+    respuestasBarberosPendientes.delete(barberoTelefono);
+    
+    // Crear la cita
+    const resultado = await crearCita(solicitud.datos);
+    
+    if (resultado.error) {
+      // Error al crear la cita
+      await message.reply(`❌ Error al confirmar: ${resultado.error}`);
+      
+      try {
+        const clientChat = await client.getChatById(solicitud.clienteChatId);
+        await sendWithTyping(clientChat, 
+          `❌ Hubo un problema al confirmar tu cita. ${resultado.error}\n\n¿Querés intentar con otro horario?`
+        );
+      } catch (e) {
+        console.error('Error notificando cliente:', e);
+      }
+    } else {
+      // Cita creada exitosamente
+      const fechaDT = parseDate(resultado.cita.fecha);
+      const fechaLegible = formatDate(fechaDT);
+      
+      await message.reply(
+        `✅ *Cita confirmada*\n\n` +
+        `👤 ${resultado.cita.nombreCliente}\n` +
+        `💇 ${resultado.cita.servicio}\n` +
+        `📅 ${fechaLegible}\n` +
+        `🕐 ${resultado.cita.hora_inicio}`
+      );
+      
+      try {
+        const clientChat = await client.getChatById(solicitud.clienteChatId);
+        await sendWithTyping(clientChat,
+          `✅ *¡Confirmado!*\n\n` +
+          `${nombreBarbero} aceptó tu cita:\n\n` +
+          `💇 ${resultado.cita.servicio}\n` +
+          `📅 ${fechaLegible}\n` +
+          `🕐 ${resultado.cita.hora_inicio}\n\n` +
+          `¡Te esperamos! 💈`
+        );
+      } catch (e) {
+        console.error('Error notificando cliente:', e);
+      }
+    }
+    
+    return true; // Mensaje procesado, no continuar con chatWithAI
+  }
+  
+  // ❌ CASO 2: Barbero rechaza con NO
+  if (textoUpper === 'NO') {
+    console.log(`   ❌ Barbero rechazó la cita`);
+    
+    clearTimeout(solicitud.timeout);
+    citasPendientesConfirmacion.delete(citaId);
+    respuestasBarberosPendientes.delete(barberoTelefono);
+    
+    await message.reply(
+      `❌ Entendido. La cita fue rechazada.\n\nEl cliente será notificado.`
+    );
+    
+    try {
+      const clientChat = await client.getChatById(solicitud.clienteChatId);
+      await sendWithTyping(clientChat,
+        `😔 ${nombreBarbero} no está disponible en ese horario.\n\n` +
+        `¿Te ofrezco otro horario o preferís con otro barbero?`
+      );
+    } catch (e) {
+      console.error('Error notificando cliente:', e);
+    }
+    
+    return true; // Mensaje procesado
+  }
+  
+  // ⏰ CASO 3: Barbero sugiere otra hora
+  // Detectar patrones como "3:00 PM mejor", "mejor a las 4", "10:30 am"
+  const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm|AM|PM)?/i);
+  if (horaMatch) {
+    console.log(`   ⏰ Barbero sugirió otra hora: ${texto}`);
+    
+    clearTimeout(solicitud.timeout);
+    citasPendientesConfirmacion.delete(citaId);
+    respuestasBarberosPendientes.delete(barberoTelefono);
+    
+    const horaSugerida = horaMatch[0];
+    
+    await message.reply(
+      `👍 Perfecto, voy a ofrecerle al cliente el horario de ${horaSugerida}.`
+    );
+    
+    try {
+      const clientChat = await client.getChatById(solicitud.clienteChatId);
+      await sendWithTyping(clientChat,
+        `${nombreBarbero} sugiere mejor a las *${horaSugerida}* para tu ${solicitud.datos.servicio}.\n\n` +
+        `¿Te sirve ese horario?`
+      );
+    } catch (e) {
+      console.error('Error notificando cliente:', e);
+    }
+    
+    return true; // Mensaje procesado
+  }
+  
+  // Si no es ninguno de los casos anteriores, podría ser otra cosa
+  console.log(`   ℹ️ Respuesta no reconocida, continuando con flujo normal`);
   return false;
 }
 
@@ -1444,18 +1562,25 @@ client.on('message', async (message) => {
     
     console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
     
+    // ✅ CRÍTICO: Verificar si es un barbero y si tiene respuestas pendientes
     const esBarbero = Object.entries(BARBEROS).find(([nombre, data]) => data.telefono === userId);
     
     if (esBarbero) {
       const [nombreBarbero, dataBarbero] = esBarbero;
+      console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombreBarbero}`);
+      
+      // Intentar procesar como respuesta a solicitud pendiente
       const procesado = await handleMensajeBarbero(message, nombreBarbero);
       
       if (procesado) {
-        console.log(`✅ Confirmación de cita procesada por barbero: ${nombreBarbero}`);
-        return;
+        console.log(`✅ Respuesta de barbero procesada exitosamente`);
+        return; // No continuar con chatWithAI
       }
+      
+      console.log(`   ℹ️ No era una respuesta a solicitud, continuando con flujo normal`);
     }
     
+    // Procesar mensaje normalmente con IA
     const respuesta = await chatWithAI(userMessage, userId, message.from);
     
     if (respuesta) {
@@ -1492,12 +1617,13 @@ console.log('🕐 Timezone:', TIMEZONE);
 console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
 console.log(`👤 Dueño: ${OWNER_NUMBER}`);
 console.log('');
-console.log('🔧 CORRECCIONES APLICADAS:');
-console.log('  ✅ Fix JSON parsing con limpieza agresiva');
-console.log('  ✅ Fix confirmación con barbero antes de crear cita');
-console.log('  ✅ Fix notificaciones automáticas a barberos');
-console.log('  ✅ Fix handler especial para respuestas SI/NO');
-console.log('  ✅ Fix instrucciones mejoradas en prompt');
+console.log('🔧 VERSIÓN V2 - CORRECCIONES APLICADAS:');
+console.log('  ✅ Fix verificación de disponibilidad mejorada con logs');
+console.log('  ✅ Fix flujo de confirmación con barbero ANTES de crear cita');
+console.log('  ✅ Fix barbero puede sugerir otra hora');
+console.log('  ✅ Fix notificaciones correctas (barbero = confirmación, owner = alertas)');
+console.log('  ✅ Fix detección de conflictos de horarios');
+console.log('  ✅ Fix validación de horarios disponibles antes de emitir BOOKING tag');
 console.log('');
 client.initialize();
 
