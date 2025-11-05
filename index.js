@@ -1,5 +1,5 @@
 // =========================
-// CORTEX IA - INDEX.JS (Optimizado y Consolidado)
+// CORTEX IA - BARBERSHOP BOT (Producción)
 // =========================
 require('dotenv').config();
 
@@ -20,17 +20,19 @@ let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
+const PANEL_URL = process.env.PANEL_URL || 'https://cortexbarberia.site/panel';
 
 // ======== RUTAS DE CARPETAS/ARCHIVOS ========
 const ROOT_DIR = __dirname;
 const DATA_DIR = path.join(ROOT_DIR, 'data');
 const PROMPTS_DIR = path.join(ROOT_DIR, 'prompts');
 
-const BOOKINGS_FILE = path.join(DATA_DIR, 'user_bookings.json');
-const RESERVAS_FILE = path.join(DATA_DIR, 'demo_reservas.json');
+const BOOKINGS_FILE = path.join(DATA_DIR, 'citas.json');
+const WAITLIST_FILE = path.join(DATA_DIR, 'waitlist.json');
+const BARBERS_FILE = path.join(DATA_DIR, 'barberos.json');
+const CLIENTS_FILE = path.join(DATA_DIR, 'clientes.json');
 const SCHEDULED_MESSAGES_FILE = path.join(DATA_DIR, 'scheduled_messages.json');
-const BARBERIA_BASE_PATH = path.join(PROMPTS_DIR, 'barberia_base.txt');
-const VENTAS_PROMPT_PATH = path.join(PROMPTS_DIR, 'ventas.txt');
+const BARBERIA_CONFIG_PATH = path.join(ROOT_DIR, 'barberia_base.txt');
 
 // Cliente de OpenAI
 if (!process.env.OPENAI_API_KEY) {
@@ -38,9 +40,10 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 // ========== 🛡️ ANTI-BAN: HUMAN-LIKE DELAYS ==========
-const MIN_RESPONSE_DELAY = 2000; // 2 seconds minimum
-const MAX_RESPONSE_DELAY = 5000; // 5 seconds maximum
+const MIN_RESPONSE_DELAY = 2000;
+const MAX_RESPONSE_DELAY = 5000;
 
 function humanDelay() {
   const delay = Math.floor(Math.random() * (MAX_RESPONSE_DELAY - MIN_RESPONSE_DELAY + 1)) + MIN_RESPONSE_DELAY;
@@ -50,22 +53,18 @@ function humanDelay() {
 
 async function sendWithTyping(chat, message) {
   try {
-    await chat.sendStateTyping(); // Show "typing..."
-    await humanDelay(); // Wait like human typing
+    await chat.sendStateTyping();
+    await humanDelay();
     await chat.sendMessage(message);
-    await chat.clearState(); // Stop typing indicator
+    await chat.clearState();
   } catch (error) {
-    // Fallback if typing state fails
     console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
     await humanDelay();
     await chat.sendMessage(message);
   }
 }
 
-
-
 // ========== WHATSAPP CLIENT ==========
-// 🔥 PATCHED: Configure Puppeteer with container-safe flags
 const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
 const client = new Client({
@@ -87,21 +86,977 @@ const client = new Client({
   authTimeout: 0,
 });
 
+// ========== ESTADO GLOBAL ==========
+let BARBERIA_CONFIG = null;
+let BARBEROS = {}; // { nombre: { telefono, horario, especialidades, estado, bloques } }
+let CITAS = []; // Array de todas las citas
+let WAITLIST = []; // Lista de espera
+let CLIENTES = {}; // Base de datos de clientes { telefono: { nombre, historial, preferencias } }
+const userStates = new Map();
+let BOT_PAUSED_GLOBAL = false;
+let BOT_PAUSED_CHATS = new Set();
+
+// ========== FUNCIONES AUXILIARES ==========
+function now() {
+  return DateTime.now().setZone(TIMEZONE);
+}
+
+function parseDate(dateStr) {
+  return DateTime.fromISO(dateStr, { zone: TIMEZONE });
+}
+
+function formatTime(dt) {
+  return dt.toFormat('h:mm a');
+}
+
+function formatDate(dt) {
+  return dt.toFormat('EEEE d \'de\' MMMM', { locale: 'es' });
+}
+
+// ========== INICIALIZACIÓN DE ARCHIVOS ==========
+async function initDataFiles() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(path.join(DATA_DIR, 'session'), { recursive: true });
+  await fs.mkdir(PROMPTS_DIR, { recursive: true });
+  
+  const files = {
+    [BOOKINGS_FILE]: [],
+    [WAITLIST_FILE]: [],
+    [BARBERS_FILE]: {},
+    [CLIENTS_FILE]: {},
+    [SCHEDULED_MESSAGES_FILE]: []
+  };
+  
+  for (const [file, defaultContent] of Object.entries(files)) {
+    if (!fssync.existsSync(file)) {
+      await fs.writeFile(file, JSON.stringify(defaultContent, null, 2), 'utf-8');
+      console.log(`✅ Creado: ${path.basename(file)}`);
+    }
+  }
+  
+  await cargarDatos();
+}
+
+async function cargarDatos() {
+  try {
+    CITAS = JSON.parse(await fs.readFile(BOOKINGS_FILE, 'utf-8'));
+    WAITLIST = JSON.parse(await fs.readFile(WAITLIST_FILE, 'utf-8'));
+    BARBEROS = JSON.parse(await fs.readFile(BARBERS_FILE, 'utf-8'));
+    CLIENTES = JSON.parse(await fs.readFile(CLIENTS_FILE, 'utf-8'));
+    console.log('✅ Datos cargados correctamente');
+  } catch (error) {
+    console.error('❌ Error cargando datos:', error.message);
+  }
+}
+
+async function guardarCitas() {
+  await fs.writeFile(BOOKINGS_FILE, JSON.stringify(CITAS, null, 2), 'utf-8');
+}
+
+async function guardarWaitlist() {
+  await fs.writeFile(WAITLIST_FILE, JSON.stringify(WAITLIST, null, 2), 'utf-8');
+}
+
+async function guardarBarberos() {
+  await fs.writeFile(BARBERS_FILE, JSON.stringify(BARBEROS, null, 2), 'utf-8');
+}
+
+async function guardarClientes() {
+  await fs.writeFile(CLIENTS_FILE, JSON.stringify(CLIENTES, null, 2), 'utf-8');
+}
+
+async function cargarConfigBarberia() {
+  try {
+    const raw = await fs.readFile(BARBERIA_CONFIG_PATH, 'utf-8');
+    BARBERIA_CONFIG = JSON.parse(raw);
+    console.log(`✅ Config barbería cargada: ${BARBERIA_CONFIG.negocio.nombre}`);
+  } catch (error) {
+    console.error('❌ Error cargando config barbería:', error.message);
+  }
+}
+
+// ========== GESTIÓN DE CLIENTES ==========
+function getOrCreateClient(telefono, nombre = null) {
+  if (!CLIENTES[telefono]) {
+    CLIENTES[telefono] = {
+      nombre: nombre || 'Cliente',
+      telefono,
+      historial: [],
+      preferencias: {
+        barbero: null,
+        servicio: null
+      },
+      primeraVisita: now().toISO(),
+      ultimaVisita: now().toISO(),
+      totalCitas: 0,
+      totalCancelaciones: 0
+    };
+    guardarClientes();
+  } else if (nombre && CLIENTES[telefono].nombre === 'Cliente') {
+    CLIENTES[telefono].nombre = nombre;
+    guardarClientes();
+  }
+  return CLIENTES[telefono];
+}
+
+function esClienteRecurrente(telefono) {
+  const cliente = CLIENTES[telefono];
+  return cliente && cliente.totalCitas > 0;
+}
+
+function registrarAccionCliente(telefono, accion, detalles = {}) {
+  const cliente = getOrCreateClient(telefono);
+  cliente.historial.push({
+    fecha: now().toISO(),
+    accion,
+    ...detalles
+  });
+  cliente.ultimaVisita = now().toISO();
+  guardarClientes();
+}
+
+// ========== GESTIÓN DE BARBEROS ==========
+function obtenerBarberosDisponibles() {
+  return Object.entries(BARBEROS)
+    .filter(([nombre, data]) => data.estado !== 'cerrado')
+    .map(([nombre, data]) => ({
+      nombre,
+      estado: data.estado,
+      especialidades: data.especialidades || []
+    }));
+}
+
+function obtenerEstadoBarbero(nombreBarbero) {
+  const barbero = BARBEROS[nombreBarbero];
+  if (!barbero) return 'no_existe';
+  
+  const ahora = now();
+  const horaActual = ahora.hour * 60 + ahora.minute;
+  
+  // Verificar si está en descanso
+  if (barbero.estado === 'descanso') return 'descanso';
+  
+  // Verificar si está cerrado
+  if (barbero.estado === 'cerrado') return 'cerrado';
+  
+  // Verificar bloques de tiempo
+  if (barbero.bloques) {
+    for (const bloque of barbero.bloques) {
+      const [inicioH, inicioM] = bloque.inicio.split(':').map(Number);
+      const [finH, finM] = bloque.fin.split(':').map(Number);
+      const inicioMin = inicioH * 60 + inicioM;
+      const finMin = finH * 60 + finM;
+      
+      if (horaActual >= inicioMin && horaActual <= finMin) {
+        return 'bloqueado';
+      }
+    }
+  }
+  
+  // Verificar si tiene cita ahora
+  const citaActual = CITAS.find(c => {
+    if (c.barbero !== nombreBarbero || c.estado === 'cancelada') return false;
+    const citaDT = parseDate(`${c.fecha}T${c.hora_inicio}`);
+    const diff = ahora.diff(citaDT, 'minutes').minutes;
+    return diff >= 0 && diff < (c.duracion || 30);
+  });
+  
+  if (citaActual) return 'en_cita';
+  
+  return 'disponible';
+}
+
+// ========== GESTIÓN DE CITAS ==========
+function obtenerCitasDelDia(fecha = null, barbero = null) {
+  const fechaBuscar = fecha || now().toFormat('yyyy-MM-dd');
+  return CITAS.filter(c => {
+    if (c.estado === 'cancelada') return false;
+    if (c.fecha !== fechaBuscar) return false;
+    if (barbero && c.barbero !== barbero) return false;
+    return true;
+  });
+}
+
+function verificarDisponibilidad(fecha, hora, duracion, barbero = null) {
+  const horaSolicitada = parseDate(`${fecha}T${hora}`);
+  const horaFin = horaSolicitada.plus({ minutes: duracion });
+  
+  const citasDelDia = obtenerCitasDelDia(fecha, barbero);
+  
+  for (const cita of citasDelDia) {
+    const citaInicio = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
+    const citaFin = citaInicio.plus({ minutes: cita.duracion || 30 });
+    
+    // Verificar solapamiento
+    if (horaSolicitada < citaFin && horaFin > citaInicio) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+function obtenerProximosSlots(fecha = null, cantidad = 3, servicio = null) {
+  const fechaBuscar = fecha || now().toFormat('yyyy-MM-dd');
+  const ahora = now();
+  const duracion = servicio ? (BARBERIA_CONFIG.servicios[servicio]?.min || 30) : 30;
+  
+  const slots = [];
+  const horarioHoy = obtenerHorarioDelDia(ahora.weekday);
+  
+  if (!horarioHoy) return [];
+  
+  const [aperturaH, aperturaM] = horarioHoy.inicio.split(':').map(Number);
+  const [cierreH, cierreM] = horarioHoy.fin.split(':').map(Number);
+  
+  let horaActual = DateTime.fromObject({ 
+    year: ahora.year, 
+    month: ahora.month, 
+    day: ahora.day,
+    hour: aperturaH,
+    minute: aperturaM
+  }, { zone: TIMEZONE });
+  
+  const horaCierre = DateTime.fromObject({ 
+    year: ahora.year, 
+    month: ahora.month, 
+    day: ahora.day,
+    hour: cierreH,
+    minute: cierreM
+  }, { zone: TIMEZONE });
+  
+  // Si es hoy, comenzar desde la hora actual + 30 minutos
+  if (fechaBuscar === ahora.toFormat('yyyy-MM-dd')) {
+    horaActual = ahora.plus({ minutes: 30 });
+    // Redondear a la siguiente media hora
+    if (horaActual.minute < 30) {
+      horaActual = horaActual.set({ minute: 30 });
+    } else {
+      horaActual = horaActual.plus({ hours: 1 }).set({ minute: 0 });
+    }
+  }
+  
+  while (horaActual < horaCierre && slots.length < cantidad) {
+    const hora = horaActual.toFormat('HH:mm');
+    
+    // Saltar almuerzo
+    const horaNum = horaActual.hour;
+    if (BARBERIA_CONFIG.horario.almuerzo && 
+        horaNum >= BARBERIA_CONFIG.horario.almuerzo.start && 
+        horaNum < BARBERIA_CONFIG.horario.almuerzo.end) {
+      horaActual = horaActual.plus({ minutes: 30 });
+      continue;
+    }
+    
+    // Verificar disponibilidad
+    if (verificarDisponibilidad(fechaBuscar, hora, duracion)) {
+      slots.push(formatTime(horaActual));
+    }
+    
+    horaActual = horaActual.plus({ minutes: 30 });
+  }
+  
+  return slots;
+}
+
+function obtenerHorarioDelDia(diaSemana) {
+  // diaSemana: 1-7 (1=Lunes, 7=Domingo)
+  const config = BARBERIA_CONFIG.horario;
+  
+  if (diaSemana >= 1 && diaSemana <= 5) {
+    // Lunes a Viernes
+    const [inicio, fin] = config.lun_vie.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  } else if (diaSemana === 6) {
+    // Sábado
+    const [inicio, fin] = config.sab.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  } else {
+    // Domingo
+    const [inicio, fin] = config.dom.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  }
+}
+
+function convertirA24h(hora12) {
+  const match = hora12.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!match) return hora12;
+  
+  let [, h, m, periodo] = match;
+  h = parseInt(h);
+  m = parseInt(m);
+  
+  if (periodo.toUpperCase() === 'PM' && h !== 12) h += 12;
+  if (periodo.toUpperCase() === 'AM' && h === 12) h = 0;
+  
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+async function crearCita(datos) {
+  const { nombreCliente, servicio, fecha, hora_inicio, barbero, telefono } = datos;
+  
+  // Obtener duración del servicio
+  const duracion = BARBERIA_CONFIG.servicios[servicio]?.min || 30;
+  
+  // Verificar disponibilidad
+  if (!verificarDisponibilidad(fecha, hora_inicio, duracion, barbero)) {
+    return { error: 'Ese horario ya no está disponible' };
+  }
+  
+  const cita = {
+    id: `CITA-${Date.now()}`,
+    nombreCliente,
+    telefono,
+    servicio,
+    fecha,
+    hora_inicio,
+    duracion,
+    barbero: barbero || 'Cualquiera',
+    estado: 'confirmada',
+    createdAt: now().toISO(),
+    notificaciones: {
+      recordatorio: false,
+      review: false
+    }
+  };
+  
+  CITAS.push(cita);
+  await guardarCitas();
+  
+  // Registrar en historial del cliente
+  const cliente = getOrCreateClient(telefono, nombreCliente);
+  cliente.totalCitas++;
+  if (barbero) cliente.preferencias.barbero = barbero;
+  cliente.preferencias.servicio = servicio;
+  registrarAccionCliente(telefono, 'cita_creada', { citaId: cita.id, servicio, fecha, hora_inicio });
+  
+  // Programar recordatorio (1 hora antes)
+  await programarRecordatorio(cita);
+  
+  // Notificar al barbero (si es específico)
+  if (barbero && barbero !== 'Cualquiera' && BARBEROS[barbero]) {
+    await notificarBarbero(barbero, `📅 Nueva cita: ${nombreCliente} - ${servicio} - ${fecha} ${hora_inicio}`);
+  }
+  
+  // Notificar al dueño
+  await notificarDueno(`📅 *NUEVA CITA*\n\n👤 Cliente: ${nombreCliente}\n💇 Servicio: ${servicio}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}\n👨‍🦲 Barbero: ${barbero || 'Cualquiera'}`);
+  
+  return { success: true, cita };
+}
+
+async function cancelarCita(nombreCliente, fecha, hora_inicio) {
+  const cita = CITAS.find(c => 
+    c.nombreCliente.toLowerCase() === nombreCliente.toLowerCase() &&
+    c.fecha === fecha &&
+    c.hora_inicio === hora_inicio &&
+    c.estado !== 'cancelada'
+  );
+  
+  if (!cita) {
+    return { error: 'No encontré esa cita' };
+  }
+  
+  cita.estado = 'cancelada';
+  cita.canceladaAt = now().toISO();
+  await guardarCitas();
+  
+  // Registrar en historial del cliente
+  if (cita.telefono) {
+    const cliente = CLIENTES[cita.telefono];
+    if (cliente) {
+      cliente.totalCancelaciones++;
+      registrarAccionCliente(cita.telefono, 'cita_cancelada', { citaId: cita.id });
+    }
+  }
+  
+  // Notificar al barbero
+  if (cita.barbero && cita.barbero !== 'Cualquiera' && BARBEROS[cita.barbero]) {
+    await notificarBarbero(cita.barbero, `❌ Cita cancelada: ${nombreCliente} - ${fecha} ${hora_inicio}`);
+  }
+  
+  // Notificar al dueño
+  await notificarDueno(`❌ *CITA CANCELADA*\n\n👤 Cliente: ${nombreCliente}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}`);
+  
+  // Revisar waitlist
+  await procesarWaitlist(fecha);
+  
+  return { success: true, cita };
+}
+
+// ========== WAITLIST (LISTA DE ESPERA) ==========
+async function agregarAWaitlist(telefono, nombreCliente, servicio, fecha) {
+  const entrada = {
+    id: `WAIT-${Date.now()}`,
+    telefono,
+    nombreCliente,
+    servicio,
+    fecha,
+    createdAt: now().toISO()
+  };
+  
+  WAITLIST.push(entrada);
+  await guardarWaitlist();
+  
+  registrarAccionCliente(telefono, 'waitlist_agregado', { servicio, fecha });
+  
+  return entrada;
+}
+
+async function procesarWaitlist(fecha) {
+  const enEspera = WAITLIST.filter(w => w.fecha === fecha);
+  
+  if (enEspera.length === 0) return;
+  
+  // Obtener slots disponibles
+  const slotsDisponibles = obtenerProximosSlots(fecha, 5);
+  
+  if (slotsDisponibles.length === 0) return;
+  
+  // Notificar al primero en la lista
+  const primero = enEspera[0];
+  const horaDisponible = slotsDisponibles[0];
+  
+  try {
+    const chat = await client.getChatById(primero.telefono);
+    await sendWithTyping(chat, 
+      `¡Hola ${primero.nombreCliente}! 🎉\n\nSe liberó un espacio para *${primero.servicio}* hoy a las *${horaDisponible}*.\n\n¿Lo tomas? Responde *Sí* o *No*`
+    );
+    
+    // Marcar como reserva provisional por 2 minutos
+    setTimeout(() => {
+      // Si no ha confirmado, pasar al siguiente
+      const estaEnWaitlist = WAITLIST.find(w => w.id === primero.id);
+      if (estaEnWaitlist) {
+        WAITLIST = WAITLIST.filter(w => w.id !== primero.id);
+        guardarWaitlist();
+        procesarWaitlist(fecha); // Intentar con el siguiente
+      }
+    }, 120000); // 2 minutos
+    
+  } catch (error) {
+    console.error('Error notificando waitlist:', error.message);
+  }
+}
+
+// ========== RECORDATORIOS Y NOTIFICACIONES ==========
+async function programarRecordatorio(cita) {
+  const citaDT = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
+  const recordatorioTime = citaDT.minus({ hours: 1 });
+  
+  const ahora = now();
+  const diff = recordatorioTime.diff(ahora, 'milliseconds').milliseconds;
+  
+  if (diff > 0 && diff < 86400000) { // Menos de 24 horas
+    setTimeout(async () => {
+      try {
+        const chat = await client.getChatById(cita.telefono);
+        await sendWithTyping(chat, 
+          `🔔 *Recordatorio*\n\nHola ${cita.nombreCliente}! Te esperamos en 1 hora para tu *${cita.servicio}*.\n\n📍 ${BARBERIA_CONFIG.negocio.direccion}\n🕐 ${cita.hora_inicio}\n\n¡Nos vemos pronto! 😊`
+        );
+        
+        cita.notificaciones.recordatorio = true;
+        await guardarCitas();
+      } catch (error) {
+        console.error('Error enviando recordatorio:', error.message);
+      }
+    }, diff);
+  }
+  
+  // Programar solicitud de review (2 días después)
+  const reviewTime = citaDT.plus({ days: 2 });
+  const reviewDiff = reviewTime.diff(ahora, 'milliseconds').milliseconds;
+  
+  if (reviewDiff > 0 && reviewDiff < 172800000) { // Menos de 2 días
+    setTimeout(async () => {
+      try {
+        const chat = await client.getChatById(cita.telefono);
+        await sendWithTyping(chat, 
+          `¡Hola ${cita.nombreCliente}! 😊\n\nEsperamos que hayas quedado contento con tu ${cita.servicio}.\n\n¿Nos ayudas con una reseña? ⭐️\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias por preferirnos!`
+        );
+        
+        cita.notificaciones.review = true;
+        await guardarCitas();
+      } catch (error) {
+        console.error('Error enviando solicitud de review:', error.message);
+      }
+    }, reviewDiff);
+  }
+}
+
+async function notificarBarbero(nombreBarbero, mensaje) {
+  const barbero = BARBEROS[nombreBarbero];
+  if (!barbero || !barbero.telefono) return;
+  
+  try {
+    const chat = await client.getChatById(barbero.telefono);
+    await sendWithTyping(chat, mensaje);
+  } catch (error) {
+    console.error(`Error notificando a barbero ${nombreBarbero}:`, error.message);
+  }
+}
+
+async function notificarDueno(mensaje, contextChatId = null) {
+  try {
+    const chat = await client.getChatById(OWNER_CHAT_ID);
+    let fullMsg = mensaje;
+    if (contextChatId) {
+      fullMsg += `\n\n💬 Chat: ${contextChatId}`;
+    }
+    await sendWithTyping(chat, fullMsg);
+  } catch (error) {
+    console.error('Error notificando al dueño:', error.message);
+  }
+}
+
+// ========== COMANDOS PARA BARBEROS Y DUEÑO ==========
+async function handleCommand(command, args, userId) {
+  const esOwner = userId === OWNER_CHAT_ID;
+  const esBarbero = Object.values(BARBEROS).some(b => b.telefono === userId);
+  
+  switch (command) {
+    // ========== COMANDOS DEL DUEÑO ==========
+    case '/ayuda':
+    case '/help':
+      if (esOwner) {
+        return `📋 *COMANDOS DISPONIBLES*\n\n` +
+          `*Gestión General:*\n` +
+          `/panel - Ver panel de control\n` +
+          `/pausar - Pausar bot en este chat\n` +
+          `/pausar todo - Pausar bot en todos los chats\n` +
+          `/iniciar - Reactivar bot en este chat\n` +
+          `/iniciar todo - Reactivar bot en todos los chats\n\n` +
+          `*Barberos:*\n` +
+          `/barberos - Lista de barberos y estados\n` +
+          `/disponibilidad [nombre] - Ver disponibilidad de un barbero\n\n` +
+          `*Citas:*\n` +
+          `/citas general - Todas las citas de hoy\n` +
+          `/citas [nombre] - Citas de un barbero específico\n` +
+          `/agendar [nombre] [servicio] [hora] - Crear cita manual (walk-in)\n\n` +
+          `*Configuración:*\n` +
+          `/cerrar [hora inicial]-[hora final] - Bloquear horario\n` +
+          `/abrir [hora inicial]-[hora final] - Liberar horario bloqueado`;
+      } else if (esBarbero) {
+        const nombreBarbero = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
+        return `📋 *COMANDOS DISPONIBLES (Barbero)*\n\n` +
+          `/citas - Tus citas de hoy\n` +
+          `/disponibilidad - Tu horario de hoy\n` +
+          `/descanso iniciar - Iniciar descanso\n` +
+          `/descanso terminar - Terminar descanso\n` +
+          `/cerrar [hora]-[hora] - Bloquear horario\n` +
+          `/abrir [hora]-[hora] - Liberar horario`;
+      }
+      return 'Comando no disponible para tu rol.';
+    
+    case '/panel':
+      if (!esOwner) return 'Solo el dueño puede acceder al panel.';
+      return `📊 *Panel de Control*\n\n${PANEL_URL}\n\n✅ Desde ahí puedes ver todas las estadísticas y gestionar citas.`;
+    
+    case '/pausar':
+      if (!esOwner) return 'Solo el dueño puede pausar el bot.';
+      if (args[0] === 'todo') {
+        // Solicitar confirmación
+        return '⚠️ *¿Estás seguro?*\n\nEsto pausará el bot en *TODOS* los chats.\n\nResponde *Sí* para confirmar o *No* para cancelar.';
+      } else {
+        BOT_PAUSED_CHATS.add(userId);
+        return '⏸ Bot pausado en este chat. Usa /iniciar para reactivarlo.';
+      }
+    
+    case '/iniciar':
+      if (!esOwner) return 'Solo el dueño puede iniciar el bot.';
+      if (args[0] === 'todo') {
+        BOT_PAUSED_GLOBAL = false;
+        BOT_PAUSED_CHATS.clear();
+        return '▶️ Bot reactivado en todos los chats.';
+      } else {
+        BOT_PAUSED_CHATS.delete(userId);
+        return '▶️ Bot reactivado en este chat.';
+      }
+    
+    case '/barberos':
+      const barberosDisponibles = obtenerBarberosDisponibles();
+      let lista = '*👨‍🦲 BARBEROS*\n\n';
+      for (const [nombre, data] of Object.entries(BARBEROS)) {
+        const estado = obtenerEstadoBarbero(nombre);
+        const emoji = estado === 'disponible' ? '🟢' : 
+                      estado === 'en_cita' ? '🔴' : 
+                      estado === 'descanso' ? '🟡' : '⚫';
+        const estadoTxt = estado === 'disponible' ? 'Disponible' :
+                          estado === 'en_cita' ? 'En cita' :
+                          estado === 'descanso' ? 'En descanso' : 'Cerrado';
+        lista += `${emoji} *${nombre}* - ${estadoTxt}\n`;
+        if (data.especialidades && data.especialidades.length > 0) {
+          lista += `   Especialidades: ${data.especialidades.join(', ')}\n`;
+        }
+        lista += '\n';
+      }
+      return lista;
+    
+    case '/citas':
+      const argCitas = args.join(' ').toLowerCase();
+      if (argCitas === 'general' && esOwner) {
+        const citasHoy = obtenerCitasDelDia();
+        if (citasHoy.length === 0) {
+          return '📅 No hay citas agendadas para hoy.';
+        }
+        let msg = `📅 *CITAS DE HOY (${now().toFormat('d/M/yyyy')})*\n\n`;
+        citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+        for (const cita of citasHoy) {
+          msg += `🕐 ${cita.hora_inicio} - ${cita.nombreCliente}\n`;
+          msg += `   💇 ${cita.servicio}\n`;
+          msg += `   👨‍🦲 ${cita.barbero}\n\n`;
+        }
+        return msg;
+      } else if (esBarbero) {
+        const nombreBarbero = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
+        const citasHoy = obtenerCitasDelDia(null, nombreBarbero);
+        if (citasHoy.length === 0) {
+          return '📅 No tienes citas agendadas para hoy.';
+        }
+        let msg = `📅 *TUS CITAS DE HOY*\n\n`;
+        citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+        for (const cita of citasHoy) {
+          msg += `🕐 ${cita.hora_inicio} - ${cita.nombreCliente}\n`;
+          msg += `   💇 ${cita.servicio}\n\n`;
+        }
+        return msg;
+      } else if (esOwner && args.length > 0) {
+        // Ver citas de un barbero específico
+        const nombreBarbero = args.join(' ');
+        const citasHoy = obtenerCitasDelDia(null, nombreBarbero);
+        if (citasHoy.length === 0) {
+          return `📅 ${nombreBarbero} no tiene citas agendadas para hoy.`;
+        }
+        let msg = `📅 *CITAS DE ${nombreBarbero.toUpperCase()} HOY*\n\n`;
+        citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+        for (const cita of citasHoy) {
+          msg += `🕐 ${cita.hora_inicio} - ${cita.nombreCliente}\n`;
+          msg += `   💇 ${cita.servicio}\n\n`;
+        }
+        return msg;
+      }
+      return 'Uso: /citas general o /citas [nombre barbero]';
+    
+    case '/agendar':
+      if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
+      if (args.length < 3) return 'Uso: /agendar [nombre] [servicio] [hora]\nEjemplo: /agendar Juan Corte 4:30pm';
+      
+      const nombreCliente = args[0];
+      const servicio = args[1];
+      const horaStr = args[2];
+      
+      // Convertir hora a formato 24h
+      const hora24 = convertirA24h(horaStr);
+      const fechaHoy = now().toFormat('yyyy-MM-dd');
+      
+      // Obtener barbero (si es barbero quien ejecuta el comando, usar su nombre)
+      let barberoAsignado = 'Cualquiera';
+      if (esBarbero) {
+        barberoAsignado = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
+      }
+      
+      const resultado = await crearCita({
+        nombreCliente,
+        servicio,
+        fecha: fechaHoy,
+        hora_inicio: hora24,
+        barbero: barberoAsignado,
+        telefono: `WALKIN-${Date.now()}@c.us` // Teléfono temporal para walk-ins
+      });
+      
+      if (resultado.error) {
+        return `❌ ${resultado.error}`;
+      }
+      
+      return `✅ Cita creada:\n*${nombreCliente}* - ${servicio}\n📆 Hoy a las ${horaStr}`;
+    
+    case '/disponibilidad':
+      if (esBarbero) {
+        const nombreBarbero = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
+        const horario = obtenerHorarioDelDia(now().weekday);
+        const slots = obtenerProximosSlots(null, 10);
+        return `📅 *Tu horario de hoy*\n\n` +
+          `🕐 ${horario.inicio} - ${horario.fin}\n\n` +
+          `*Horarios disponibles:*\n${slots.join('\n')}`;
+      } else if (esOwner && args.length > 0) {
+        const nombreBarbero = args.join(' ');
+        const horario = obtenerHorarioDelDia(now().weekday);
+        const slots = obtenerProximosSlots(null, 10);
+        return `📅 *Horario de ${nombreBarbero}*\n\n` +
+          `🕐 ${horario.inicio} - ${horario.fin}\n\n` +
+          `*Horarios disponibles:*\n${slots.join('\n')}`;
+      }
+      return 'Uso: /disponibilidad [nombre barbero]';
+    
+    case '/descanso':
+      if (!esBarbero && !esOwner) return 'Solo los barberos pueden usar este comando.';
+      
+      const nombreBarbero = esBarbero ? 
+        Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId) :
+        args[1];
+      
+      if (!nombreBarbero || !BARBEROS[nombreBarbero]) {
+        return 'Barbero no encontrado.';
+      }
+      
+      if (args[0] === 'iniciar') {
+        BARBEROS[nombreBarbero].estado = 'descanso';
+        await guardarBarberos();
+        return `☕️ Descanso iniciado para ${nombreBarbero}. Las nuevas consultas se asignarán a otros barberos.`;
+      } else if (args[0] === 'terminar') {
+        BARBEROS[nombreBarbero].estado = 'disponible';
+        await guardarBarberos();
+        return `✅ Descanso terminado. ${nombreBarbero} está disponible nuevamente.`;
+      }
+      return 'Uso: /descanso iniciar [nombre] o /descanso terminar [nombre]';
+    
+    case '/cerrar':
+      if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
+      if (args.length === 0) return 'Uso: /cerrar [hora inicial]-[hora final]\nEjemplo: /cerrar 3pm-5pm';
+      
+      const rangoStr = args[0];
+      const [inicioStr, finStr] = rangoStr.split('-');
+      
+      if (!inicioStr || !finStr) {
+        return 'Formato incorrecto. Usa: /cerrar 3pm-5pm';
+      }
+      
+      const inicioBloque = convertirA24h(inicioStr);
+      const finBloque = convertirA24h(finStr);
+      
+      // Preguntar si es solo por hoy o todos los días
+      return `⚠️ *Bloquear horario ${inicioStr} - ${finStr}*\n\n¿Solo por hoy o para todos los días?\n\nResponde *Hoy* o *Todos*`;
+    
+    case '/abrir':
+      if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
+      if (args.length === 0) return 'Uso: /abrir [hora inicial]-[hora final]\nEjemplo: /abrir 3pm-5pm';
+      
+      const rangoAbrir = args[0];
+      const [inicioAbrirStr, finAbrirStr] = rangoAbrir.split('-');
+      
+      if (!inicioAbrirStr || !finAbrirStr) {
+        return 'Formato incorrecto. Usa: /abrir 3pm-5pm';
+      }
+      
+      return `✅ Horario ${inicioAbrirStr} - ${finAbrirStr} liberado.`;
+    
+    default:
+      return null;
+  }
+}
+
+// ========== DETECCIÓN DE IDIOMA ==========
+function detectarIdioma(mensaje) {
+  const palabrasIngles = ['hello', 'hi', 'hey', 'appointment', 'booking', 'schedule', 'haircut', 'how much', 'price', 'when', 'where', 'can i', 'i want', 'i need', 'thank you', 'thanks'];
+  const palabrasEspanol = ['hola', 'buenos', 'cita', 'agendar', 'corte', 'cuanto', 'precio', 'cuando', 'donde', 'puedo', 'quiero', 'necesito', 'gracias'];
+  
+  const mensajeMin = mensaje.toLowerCase();
+  
+  const contadorIngles = palabrasIngles.filter(p => mensajeMin.includes(p)).length;
+  const contadorEspanol = palabrasEspanol.filter(p => mensajeMin.includes(p)).length;
+  
+  if (contadorIngles > contadorEspanol) {
+    return 'en';
+  }
+  return 'es';
+}
+
+// ========== PROCESAMIENTO CON IA ==========
+function getUserState(userId) {
+  if (!userStates.has(userId)) {
+    userStates.set(userId, {
+      conversationHistory: [],
+      botEnabled: true,
+      lastInteraction: Date.now(),
+      idioma: 'es'
+    });
+  }
+  return userStates.get(userId);
+}
+
+async function chatWithAI(userMessage, userId, chatId) {
+  const state = getUserState(userId);
+  const cliente = getOrCreateClient(userId);
+  
+  // Detectar idioma
+  state.idioma = detectarIdioma(userMessage);
+  
+  // Verificar si el bot está pausado
+  if (BOT_PAUSED_GLOBAL || BOT_PAUSED_CHATS.has(chatId)) {
+    return null;
+  }
+  
+  // Manejar comandos
+  if (userMessage.startsWith('/')) {
+    const [command, ...args] = userMessage.split(' ');
+    const respuesta = await handleCommand(command, args, chatId);
+    if (respuesta) return respuesta;
+  }
+  
+  // Construir contexto del cliente
+  let contextoCliente = '';
+  if (esClienteRecurrente(userId)) {
+    contextoCliente = `\n\n🔔 CLIENTE RECURRENTE: ${cliente.nombre} (${cliente.totalCitas} citas anteriores)`;
+    if (cliente.preferencias.servicio) {
+      contextoCliente += `\nÚltimo servicio: ${cliente.preferencias.servicio}`;
+    }
+    if (cliente.preferencias.barbero) {
+      contextoCliente += `\nBarbero preferido: ${cliente.preferencias.barbero}`;
+    }
+  }
+  
+  // Obtener slots disponibles
+  const slotsHoy = obtenerProximosSlots(null, 5);
+  const slotsTxt = slotsHoy.length > 0 ? slotsHoy.join(', ') : 'No hay horarios disponibles hoy';
+  
+  // Construir lista de servicios
+  const serviciosTxt = Object.entries(BARBERIA_CONFIG.servicios)
+    .map(([nombre, data]) => `• ${nombre} - $${data.precio.toLocaleString()} (${data.min} min)`)
+    .join('\n');
+  
+  // Construir lista de barberos
+  const barberosTxt = Object.entries(BARBEROS)
+    .map(([nombre, data]) => {
+      const estado = obtenerEstadoBarbero(nombre);
+      const especialidades = data.especialidades ? ` (${data.especialidades.join(', ')})` : '';
+      return `• ${nombre}${especialidades} - ${estado}`;
+    })
+    .join('\n');
+  
+  // Sistema prompt
+  const ahora = now();
+  const fechaISO = ahora.toFormat('yyyy-MM-dd');
+  const horaActual = ahora.toFormat('HH:mm');
+  const diaSemanaTxt = ahora.toFormat('cccc', { locale: 'es' });
+  const horarioHoy = obtenerHorarioDelDia(ahora.weekday);
+  const horarioHoyTxt = horarioHoy ? `${horarioHoy.inicio} - ${horarioHoy.fin}` : 'Cerrado';
+  
+  let systemPrompt = BARBERIA_CONFIG.system_prompt || '';
+  
+  // Reemplazar variables
+  systemPrompt = systemPrompt
+    .replace(/{hoy}/g, fechaISO)
+    .replace(/{horaActual}/g, horaActual)
+    .replace(/{diaSemana}/g, diaSemanaTxt)
+    .replace(/{nombreBarberia}/g, BARBERIA_CONFIG.negocio.nombre)
+    .replace(/{direccionBarberia}/g, BARBERIA_CONFIG.negocio.direccion)
+    .replace(/{telefonoBarberia}/g, BARBERIA_CONFIG.negocio.telefono)
+    .replace(/{horarioHoy}/g, horarioHoyTxt)
+    .replace(/{serviciosTxt}/g, serviciosTxt)
+    .replace(/{slotsDisponiblesHoy}/g, slotsTxt)
+    .replace(/{barberosTxt}/g, barberosTxt);
+  
+  // Agregar contexto del cliente
+  systemPrompt += contextoCliente;
+  
+  // Si es en inglés, agregar instrucción
+  if (state.idioma === 'en') {
+    systemPrompt += '\n\n🌐 RESPONDE EN INGLÉS. El cliente está escribiendo en inglés.';
+  }
+  
+  // Agregar mensaje del usuario al historial
+  state.conversationHistory.push({ role: 'user', content: userMessage });
+  
+  // Limitar historial
+  if (state.conversationHistory.length > 20) {
+    state.conversationHistory = state.conversationHistory.slice(-20);
+  }
+  
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...state.conversationHistory
+      ],
+      temperature: 0.5,
+      max_tokens: 500
+    });
+    
+    let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || 
+      '¿Te ayudo con algo más?';
+    
+    // Procesar tags de booking/cancelación
+    respuesta = await procesarTags(respuesta, userId, cliente.nombre);
+    
+    state.conversationHistory.push({ role: 'assistant', content: respuesta });
+    
+    return respuesta;
+    
+  } catch (e) {
+    console.error('OpenAI error:', e.message);
+    await notificarDueno(
+      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`,
+      chatId
+    );
+    return state.idioma === 'en' ? 
+      'Sorry, something went wrong. Can you repeat that?' :
+      'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
+  }
+}
+
+async function procesarTags(respuesta, userId, nombreCliente) {
+  // Detectar tag <BOOKING:...>
+  const bookingMatch = respuesta.match(/<BOOKING:(.+?)>/);
+  if (bookingMatch) {
+    try {
+      const jsonStr = bookingMatch[1].trim();
+      const datos = JSON.parse(jsonStr);
+      
+      datos.telefono = userId;
+      datos.nombreCliente = datos.nombreCliente || nombreCliente;
+      
+      const resultado = await crearCita(datos);
+      
+      if (resultado.error) {
+        respuesta = respuesta.replace(/<BOOKING:.+?>/, `\n\n❌ ${resultado.error}`);
+      } else {
+        respuesta = respuesta.replace(/<BOOKING:.+?>/, '');
+      }
+    } catch (e) {
+      console.error('Error procesando BOOKING:', e.message);
+      respuesta = respuesta.replace(/<BOOKING:.+?>/, '\n\n❌ Error al crear la cita');
+    }
+  }
+  
+  // Detectar tag <CANCELLED:...>
+  const cancelMatch = respuesta.match(/<CANCELLED:(.+?)>/);
+  if (cancelMatch) {
+    try {
+      const jsonStr = cancelMatch[1].trim();
+      const datos = JSON.parse(jsonStr);
+      
+      const resultado = await cancelarCita(datos.nombreCliente, datos.fecha, datos.hora_inicio);
+      
+      if (resultado.error) {
+        respuesta = respuesta.replace(/<CANCELLED:.+?>/, `\n\n❌ ${resultado.error}`);
+      } else {
+        respuesta = respuesta.replace(/<CANCELLED:.+?>/, '');
+      }
+    } catch (e) {
+      console.error('Error procesando CANCELLED:', e.message);
+      respuesta = respuesta.replace(/<CANCELLED:.+?>/, '\n\n❌ Error al cancelar la cita');
+    }
+  }
+  
+  return respuesta;
+}
+
 // ========== EXPRESS SERVER ==========
 const app = express();
+app.use(express.json());
+
 let latestQR = null;
 
-app.get('/', (req, res) => res.send('✅ Cortex AI Bot is running! 🤖'));
+app.get('/', (req, res) => res.send('✅ Cortex Barbershop Bot is running! 💈'));
 
 app.get('/qr', async (req, res) => {
   if (!latestQR) {
-    // 🔥 Check if client is already authenticated
     const isAuthenticated = client && client.info && client.info.wid;
     
     if (isAuthenticated) {
       return res.send(`
         <!DOCTYPE html><html><head>
-          <title>Cortex AI Bot - Ya Conectado</title>
+          <title>Cortex Barbershop Bot - Conectado</title>
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <style>
             body {
@@ -130,52 +1085,23 @@ app.get('/qr', async (req, res) => {
               color: #00ff00;
               margin-bottom: 20px;
             }
-            .info {
-              background: rgba(255, 255, 255, 0.1);
-              padding: 20px;
-              border-radius: 10px;
-              margin-top: 20px;
-              text-align: left;
-              line-height: 1.8;
-            }
-            .warning {
-              background: rgba(255, 200, 0, 0.2);
-              border-left: 4px solid #ffc800;
-              padding: 15px;
-              margin-top: 15px;
-              border-radius: 5px;
-              text-align: left;
-            }
           </style>
         </head><body>
           <div class="container">
-            <h1>✅ CORTEX AI BOT</h1>
+            <h1>✅ CORTEX BARBERSHOP BOT</h1>
             <div class="status">
               <div class="checkmark">✓</div>
               <h2 style="color: #00ff00; margin: 0;">Sesión Activa</h2>
-              <p style="margin-top: 10px; color: #ccc;">Tu WhatsApp ya está conectado</p>
-            </div>
-            <div class="info">
-              <strong>📱 Estado de la conexión:</strong>
-              <ul style="padding-left: 20px; margin: 10px 0;">
-                <li>✅ Cliente de WhatsApp: <strong>Conectado</strong></li>
-                <li>✅ Sesión autenticada: <strong>Activa</strong></li>
-                <li>✅ Bot funcionando: <strong>24/7</strong></li>
-              </ul>
-            </div>
-            <div class="warning">
-              <strong>💡 Nota:</strong><br>
-              No necesitas escanear el QR porque tu sesión ya está activa. El bot está respondiendo mensajes automáticamente.
+              <p style="margin-top: 10px; color: #ccc;">WhatsApp conectado correctamente</p>
             </div>
           </div>
         </body></html>
       `);
     }
     
-    // Still initializing
     return res.send(`
       <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - Iniciando</title>
+        <title>Cortex Barbershop Bot - Iniciando</title>
         <meta http-equiv="refresh" content="3">
         <style>
           body {
@@ -206,11 +1132,8 @@ app.get('/qr', async (req, res) => {
       </head><body>
         <div>
           <div class="spinner"></div>
-          <h2>⏳ Iniciando Cortex AI Bot...</h2>
-          <p>Generando código QR. La página se actualizará automáticamente.</p>
-          <p style="font-size: 12px; margin-top: 20px; opacity: 0.7;">
-            Si esto toma más de 30 segundos, verifica los logs del servidor.
-          </p>
+          <h2>⏳ Iniciando Bot...</h2>
+          <p>Generando código QR...</p>
         </div>
       </body></html>
     `);
@@ -220,1878 +1143,133 @@ app.get('/qr', async (req, res) => {
     const qrSVG = await QRCode.toString(latestQR, { 
       type: 'svg', 
       width: 400, 
-      margin: 2, 
-      color: { dark: '#000', light: '#fff' } 
+      margin: 2 
     });
     
     res.send(`
       <!DOCTYPE html><html><head>
-        <title>Cortex AI Bot - Escanea QR</title>
+        <title>Cortex Barbershop Bot - Escanea QR</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="15">
         <style>
           body {
             font-family: Arial, sans-serif;
             background: #1a1a1a;
             color: #fff;
             padding: 20px;
-            margin: 0;
             display: flex;
-            flex-direction: column;
-            align-items: center;
             justify-content: center;
+            align-items: center;
             min-height: 100vh;
           }
-          .container { text-align: center; max-width: 500px; }
-          h1 { color: #00ff00; margin-bottom: 20px; font-size: 24px; }
-          .qr-box {
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            display: inline-block;
-            margin: 20px 0;
-            box-shadow: 0 10px 40px rgba(0, 255, 0, 0.3);
+          .container {
+            text-align: center;
+            max-width: 500px;
           }
-          .instructions {
-            background: rgba(255, 255, 255, 0.1);
+          h1 { color: #00ff00; }
+          .qr-container {
+            background: white;
             padding: 20px;
             border-radius: 10px;
-            margin-top: 20px;
-            text-align: left;
-            line-height: 1.8;
-          }
-          .instructions ol { padding-left: 20px; }
-          .warning {
-            background: rgba(255, 100, 0, 0.2);
-            border-left: 4px solid #ff6400;
-            padding: 15px;
-            margin-top: 15px;
-            border-radius: 5px;
-            text-align: left;
+            display: inline-block;
+            margin: 20px 0;
           }
         </style>
       </head><body>
         <div class="container">
-          <h1>📱 CORTEX AI BOT</h1>
-          <div class="qr-box">${qrSVG}</div>
-          <div class="instructions">
-            <strong>📋 Pasos para vincular:</strong>
-            <ol>
-              <li>Abre <strong>WhatsApp</strong> en tu celular</li>
-              <li>Ve a <strong>Menú (⋮)</strong> → <strong>Dispositivos vinculados</strong></li>
-              <li>Toca <strong>"Vincular un dispositivo"</strong></li>
-              <li><strong>Escanea este QR</strong> directamente desde WhatsApp</li>
-            </ol>
+          <h1>💈 Cortex Barbershop Bot</h1>
+          <p>Escanea el QR con WhatsApp:</p>
+          <div class="qr-container">
+            ${qrSVG}
           </div>
-          <div class="warning">
-            <strong>⚠️ Si no funciona:</strong><br>
-            Usa la app de <strong>Cámara</strong> de tu celular, apunta a la pantalla y abre el link que aparece
-          </div>
+          <p><small>La página se actualizará automáticamente</small></p>
         </div>
       </body></html>
     `);
   } catch (error) {
-    console.error('Error generando QR:', error);
-    res.status(500).send(`
-      <html><head><title>Error</title>
-      <style>body {font-family: monospace; background: #000; color: #f00; padding: 20px; text-align: center;}</style>
-      </head><body>
-        <h1>❌ Error generando QR</h1>
-        <p>${error.message}</p>
-        <p><a href="/qr" style="color: #0f0;">Reintentar</a></p>
-      </body></html>
-    `);
+    res.status(500).send('Error generando QR');
   }
+});
+
+// API endpoints para el panel
+app.get('/api/citas', async (req, res) => {
+  const { fecha, barbero } = req.query;
+  let citas = CITAS.filter(c => c.estado !== 'cancelada');
+  
+  if (fecha) {
+    citas = citas.filter(c => c.fecha === fecha);
+  }
+  
+  if (barbero) {
+    citas = citas.filter(c => c.barbero === barbero);
+  }
+  
+  res.json(citas);
+});
+
+app.get('/api/stats', async (req, res) => {
+  const hoy = now().toFormat('yyyy-MM-dd');
+  const mesActual = now().toFormat('yyyy-MM');
+  
+  const citasHoy = CITAS.filter(c => c.fecha === hoy && c.estado !== 'cancelada');
+  const citasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado !== 'cancelada');
+  const canceladasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado === 'cancelada');
+  
+  // Servicios más pedidos
+  const serviciosCount = {};
+  for (const cita of citasMes) {
+    serviciosCount[cita.servicio] = (serviciosCount[cita.servicio] || 0) + 1;
+  }
+  const serviciosMasPedidos = Object.entries(serviciosCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([servicio, count]) => ({ servicio, count }));
+  
+  // Clientes nuevos vs recurrentes
+  const clientesUnicos = new Set(citasMes.map(c => c.telefono));
+  const clientesNuevos = Array.from(clientesUnicos).filter(tel => {
+    const cliente = CLIENTES[tel];
+    return cliente && cliente.totalCitas === 1;
+  }).length;
+  const clientesRecurrentes = clientesUnicos.size - clientesNuevos;
+  
+  res.json({
+    citasHoy: citasHoy.length,
+    citasMes: citasMes.length,
+    canceladasMes: canceladasMes.length,
+    serviciosMasPedidos,
+    clientesNuevos,
+    clientesRecurrentes,
+    totalClientes: Object.keys(CLIENTES).length
+  });
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ HTTP server running on port ${PORT}`);
-  console.log(`🌐 Accede al QR en: https://ai-10-production.up.railway.app/qr`);
+  console.log(`🌐 Servidor Express corriendo en puerto ${PORT}`);
 });
-
-// ========== HELPERS FS ==========
-async function ensureDir(p) { 
-  if (!fssync.existsSync(p)) fssync.mkdirSync(p, { recursive: true }); 
-}
-
-async function initDataFiles() {
-  try {
-    await ensureDir(DATA_DIR);
-    await ensureDir(PROMPTS_DIR);
-    
-    for (const [file, def] of [
-      [BOOKINGS_FILE, []],
-      [RESERVAS_FILE, {}],
-      [SCHEDULED_MESSAGES_FILE, []]
-    ]) {
-      try { await fs.access(file); } 
-      catch { 
-        await fs.writeFile(file, JSON.stringify(def, null, 2)); 
-        console.log(`✅ Creado: ${path.basename(file)}`); 
-      }
-    }
-  } catch (error) {
-    console.error('❌ Error inicializando archivos:', error);
-  }
-}
-
-// ========== LECTURA/ESCRITURA JSON ==========
-async function readJson(file, fallback) {
-  try { 
-    const content = await fs.readFile(file, 'utf8');
-    const parsed = JSON.parse(content);
-    
-    if (Array.isArray(fallback) && !Array.isArray(parsed)) {
-      console.warn(`⚠️ ${file} no es un array, usando fallback`);
-      return fallback;
-    }
-    if (typeof fallback === 'object' && !Array.isArray(fallback) && Array.isArray(parsed)) {
-      console.warn(`⚠️ ${file} no es un objeto, usando fallback`);
-      return fallback;
-    }
-    
-    return parsed;
-  }
-  catch (e) { 
-    console.warn(`⚠️ Error leyendo ${file}: ${e.message}, usando fallback`);
-    return fallback; 
-  }
-}
-
-async function writeJson(file, data) {
-  await fs.writeFile(file, JSON.stringify(data, null, 2));
-}
-
-// ========== PROMPTS / CONFIG ==========
-let BARBERIA_CONFIG = null;
-let VENTAS_PROMPT = '';
-
-function parseFirstJsonBlock(text) {
-  try { return JSON.parse(text); } catch (_) {}
-  const s = text.indexOf('{'); 
-  if (s === -1) return null;
-  let depth = 0;
-  for (let i = s; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === '{') depth++; 
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        try { return JSON.parse(text.slice(s, i + 1)); } 
-        catch { return null; }
-      }
-    }
-  }
-  return null;
-}
-
-async function cargarConfigBarberia() {
-  try {
-    console.log(`📖 Cargando: ${BARBERIA_BASE_PATH}`);
-    const raw = await fs.readFile(BARBERIA_BASE_PATH, 'utf8');
-    const parsed = parseFirstJsonBlock(raw);
-    
-    if (!parsed || typeof parsed !== 'object') {
-      console.error('❌ barberia_base.txt no tiene JSON válido. Usando fallback.');
-      BARBERIA_CONFIG = { 
-        servicios: {}, 
-        horario: {}, 
-        negocio: {}, 
-        pagos: [], 
-        faqs: [], 
-        upsell: "", 
-        system_prompt: "" 
-      };
-    } else {
-      BARBERIA_CONFIG = parsed;
-      BARBERIA_CONFIG.negocio = BARBERIA_CONFIG.negocio || {};
-      BARBERIA_CONFIG.horario = BARBERIA_CONFIG.horario || {};
-      BARBERIA_CONFIG.servicios = BARBERIA_CONFIG.servicios || {};
-      BARBERIA_CONFIG.pagos = BARBERIA_CONFIG.pagos || [];
-      BARBERIA_CONFIG.faqs = BARBERIA_CONFIG.faqs || [];
-      BARBERIA_CONFIG.upsell = BARBERIA_CONFIG.upsell || "";
-      BARBERIA_CONFIG.system_prompt = BARBERIA_CONFIG.system_prompt || "";
-      
-      console.log(`✅ Barbería config cargada (${Object.keys(BARBERIA_CONFIG.servicios).length} servicios)`);
-    }
-  } catch (e) {
-    console.error('❌ Error cargando barberia_base.txt:', e.message);
-    BARBERIA_CONFIG = { 
-      servicios: {}, 
-      horario: {}, 
-      negocio: {}, 
-      pagos: [], 
-      faqs: [], 
-      upsell: "", 
-      system_prompt: "" 
-    };
-  }
-}
-
-async function cargarVentasPrompt() {
-  try {
-    VENTAS_PROMPT = await fs.readFile(VENTAS_PROMPT_PATH, 'utf8');
-    console.log('✅ Ventas prompt cargado');
-  } catch (e) {
-    console.error('❌ Error cargando ventas.txt:', e.message);
-    VENTAS_PROMPT = 'Eres Cortex IA, asistente de ventas. Responde breve, humano, y guía a la demo (/start test).';
-  }
-}
-
-// ========== UTIL ==========
-function now() { return DateTime.now().setZone(TIMEZONE); }
-
-function formatearHora(hhmm) { 
-  const [h, m] = hhmm.split(':').map(Number); 
-  const ampm = h >= 12 ? 'PM' : 'AM'; 
-  const h12 = h % 12 || 12; 
-  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`; 
-}
-
-// ========== ARCHIVOS DE ESTADO ==========
-async function readBookings() { return readJson(BOOKINGS_FILE, []); }
-async function writeBookings(d) { return writeJson(BOOKINGS_FILE, d); }
-async function readReservas() { return readJson(RESERVAS_FILE, {}); }
-async function writeReservas(d) { return writeJson(RESERVAS_FILE, d); }
-async function readScheduledMessages() { return readJson(SCHEDULED_MESSAGES_FILE, []); }
-async function writeScheduledMessages(d) { return writeJson(SCHEDULED_MESSAGES_FILE, d); }
-
-// ========== USER STATE ==========
-const userStates = new Map();
-
-function getUserState(userId) {
-  if (!userStates.has(userId)) {
-    userStates.set(userId, { 
-      mode: 'sales', 
-      conversationHistory: [], 
-      botEnabled: true 
-    });
-  }
-  return userStates.get(userId);
-}
-
-// ========== SLOTS ==========
-function calcularSlotsUsados(horaInicio, duracionMin) { 
-  const base = 20; 
-  const blocks = Math.ceil(duracionMin / base); 
-  const [h, m] = horaInicio.split(':').map(Number); 
-  const out = []; 
-  
-  for (let i = 0; i < blocks; i++) { 
-    const total = h * 60 + m + i * base; 
-    const hh = Math.floor(total / 60); 
-    const mm = total % 60; 
-    out.push(`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`); 
-  } 
-  return out; 
-}
-
-async function verificarDisponibilidad(fecha, horaInicio, duracionMin) {
-  const reservas = await readReservas();
-  const slotsReservados = reservas[fecha] || [];
-  const slotsNecesarios = calcularSlotsUsados(horaInicio, duracionMin);
-  
-  console.log(`[DISPONIBILIDAD] Fecha: ${fecha}, Hora: ${horaInicio}, Duración: ${duracionMin}min`);
-  console.log(`[DISPONIBILIDAD] Slots necesarios:`, slotsNecesarios);
-  console.log(`[DISPONIBILIDAD] Slots reservados:`, slotsReservados);
-  
-  for (const slot of slotsNecesarios) {
-    if (slotsReservados.includes(slot)) {
-      console.log(`[DISPONIBILIDAD] ❌ COLISIÓN en slot: ${slot}`);
-      return { disponible: false, slots: slotsNecesarios, colision: slot };
-    }
-  }
-  
-  console.log(`[DISPONIBILIDAD] ✅ DISPONIBLE`);
-  return { disponible: true, slots: slotsNecesarios };
-}
-
-async function sugerirHorariosAlternativos(fecha, duracionMin, limite = 3) {
-  const reservas = await readReservas();
-  const slotsReservados = reservas[fecha] || [];
-  
-  const horario = BARBERIA_CONFIG?.horario || {};
-  const hoy = DateTime.fromISO(fecha).setLocale('es').toFormat('EEEE').toLowerCase();
-  
-  let horarioStr = '';
-  if (hoy.startsWith('sá')) horarioStr = horario.sab || '9:00-20:00';
-  else if (hoy.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
-  else horarioStr = horario.lun_vie || '9:00-20:00';
-  
-  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado' || !horarioStr.includes('-')) {
-    console.warn(`⚠️ Horario inválido para ${fecha}: "${horarioStr}"`);
-    return [];
-  }
-  
-  const partes = horarioStr.split('-');
-  if (partes.length !== 2) {
-    console.warn(`⚠️ Formato de horario inválido: "${horarioStr}"`);
-    return [];
-  }
-  
-  const [inicio, fin] = partes.map(s => s.trim());
-  
-  if (!inicio.includes(':') || !fin.includes(':')) {
-    console.warn(`⚠️ Formato de hora inválido: inicio="${inicio}", fin="${fin}"`);
-    return [];
-  }
-  
-  const [hInicio, mInicio] = inicio.split(':').map(Number);
-  const [hFin, mFin] = fin.split(':').map(Number);
-  
-  if (isNaN(hInicio) || isNaN(mInicio) || isNaN(hFin) || isNaN(mFin)) {
-    console.warn(`⚠️ Horas no numéricas: ${inicio} - ${fin}`);
-    return [];
-  }
-  
-  const minutoInicio = hInicio * 60 + mInicio;
-  const minutoFin = hFin * 60 + mFin;
-  
-  const ahora = now();
-  const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
-  
-  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
-  const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
-  
-  let minutoActual = minutoInicio;
-  if (esHoy) {
-    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
-    const minAhora = ahora.hour * 60 + ahora.minute + 1;
-    const proximoSlot = Math.ceil(minAhora / 20) * 20;
-    minutoActual = Math.max(minutoInicio, proximoSlot);
-  }
-  
-  const alternativas = [];
-  
-  for (let m = minutoActual; m < minutoFin - duracionMin; m += 20) {
-    const hh = Math.floor(m / 60);
-    const mm = m % 60;
-    const horaStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-    
-    const check = await verificarDisponibilidad(fecha, horaStr, duracionMin);
-    if (check.disponible) {
-      alternativas.push(horaStr);
-      if (alternativas.length >= limite) break;
-    }
-  }
-  
-  return alternativas;
-}
-
-// 🔥 FUNCIÓN CORREGIDA: Genera slots disponibles HOY (sin horas pasadas)
-async function generarTextoSlotsDisponiblesHoy(fecha, duracionMinDefault = 40) {
-  const reservas = await readReservas();
-  const slotsReservados = reservas[fecha] || [];
-  
-  const horario = BARBERIA_CONFIG?.horario || {};
-  const dia = DateTime.fromISO(fecha).setLocale('es').toFormat('EEEE').toLowerCase();
-  
-  let horarioStr = '';
-  if (dia.startsWith('sá')) horarioStr = horario.sab || '9:00-20:00';
-  else if (dia.startsWith('do')) horarioStr = horario.dom || 'Cerrado';
-  else horarioStr = horario.lun_vie || '9:00-20:00';
-  
-  if (!horarioStr || horarioStr.toLowerCase() === 'cerrado' || !horarioStr.includes('-')) {
-    return 'Hoy estamos cerrados.';
-  }
-  
-  const partes = horarioStr.split('-');
-  if (partes.length !== 2) return 'Horario no configurado.';
-  
-  const [inicio, fin] = partes.map(s => s.trim());
-  if (!inicio.includes(':') || !fin.includes(':')) return 'Horario no configurado.';
-
-  const [hInicio, mInicio] = inicio.split(':').map(Number);
-  const [hFin, mFin] = fin.split(':').map(Number);
-  if (isNaN(hInicio) || isNaN(mInicio) || isNaN(hFin) || isNaN(mFin)) return 'Horario no configurado.';
-  
-  const minutoInicio = hInicio * 60 + mInicio;
-  const minutoFin = hFin * 60 + mFin;
-  
-  const ahora = now();
-  const fechaConsulta = DateTime.fromISO(fecha, { zone: TIMEZONE });
-  
-  // 🔥 CORRECCIÓN 1 (Robustez): Comparación de días más estricta
-  const esHoy = fechaConsulta.startOf('day').equals(ahora.startOf('day'));
-  
-  let minutoBusqueda = minutoInicio;
-  if (esHoy) {
-    // 🔥 CORRECCIÓN 2 (Buffer): Añadir +1 min a la hora actual ANTES de calcular el próximo slot
-    // Esto evita ofrecer 4:00 PM a las 4:00 PM en punto (ofrecerá 4:20 PM)
-    // Y evita ofrecer 4:00 PM a las 4:32 PM (ofrecerá 4:40 PM)
-    const minAhora = ahora.hour * 60 + ahora.minute + 1; // +1 min buffer
-    const proximoSlot = Math.ceil(minAhora / 20) * 20;
-    minutoBusqueda = Math.max(minutoInicio, proximoSlot);
-    
-    console.log(`[Slots Hoy] Hora actual: ${ahora.toFormat('HH:mm')} (${minAhora-1} min). Próximo slot: ${proximoSlot} min.`);
-  }
-  
-  const alternativas = [];
-  
-  // Buscar slots disponibles
-  for (let m = minutoBusqueda; m <= minutoFin - duracionMinDefault; m += 20) {
-    const horaStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-    
-    // Verificar disponibilidad del slot
-    const slotsNecesarios = calcularSlotsUsados(horaStr, duracionMinDefault);
-    let colision = false;
-    
-    for (const slot of slotsNecesarios) {
-      if (slotsReservados.includes(slot)) {
-        colision = true;
-        break;
-      }
-      // Verificar que no se pase del cierre
-      const [slotH, slotM] = slot.split(':').map(Number);
-      if (slotH * 60 + slotM > minutoFin) {
-        colision = true;
-        break;
-      }
-    }
-    
-    if (!colision) {
-      alternativas.push(formatearHora(horaStr));
-    }
-  }
-  
-  if (alternativas.length === 0) {
-    return 'Ya no quedan cupos disponibles para hoy.';
-  }
-  
-  return `${alternativas.join(', ')}`;
-}
-
-// ========== TAGS ==========
-async function procesarTags(mensaje, chatId) {
-  const bookingMatch = mensaje.match(/<BOOKING:\s*({[^>]+})>/);
-  const cancelMatch = mensaje.match(/<CANCELLED:\s*({[^>]+})>/);
-
-  if (bookingMatch) {
-    try {
-      // 🔥 FIX: Handle both escaped and unescaped quotes
-      let jsonStr = bookingMatch[1];
-      
-      // Remove backslashes before quotes (OpenAI sometimes adds them)
-      jsonStr = jsonStr.replace(/\\"/g, '"');
-      
-      // If still has single quotes, replace them
-      if (jsonStr.includes("'")) {
-        jsonStr = jsonStr.replace(/'/g, '"');
-      }
-      
-      console.log('[📋 BOOKING] JSON raw:', jsonStr);
-      
-      const bookingData = JSON.parse(jsonStr);
-    
-    // 🔥 VALIDAR HORA (9 AM - 8 PM)
-    const [h, m] = bookingData.hora_inicio.split(':').map(Number);
-    if (h < 9 || h >= 20) {
-      console.error('[❌ BOOKING] Hora fuera de horario:', bookingData.hora_inicio);
-      return "Lo siento, solo atendemos de 9 AM a 8 PM. ¿Quieres agendar en otro horario?";
-    }
-      
-      const duracionMin = BARBERIA_CONFIG?.servicios?.[bookingData.servicio]?.min || 40;
-      const check = await verificarDisponibilidad(
-        bookingData.fecha, 
-        bookingData.hora_inicio, 
-        duracionMin
-      );
-      
-      if (!check.disponible) {
-        const alternativas = await sugerirHorariosAlternativos(bookingData.fecha, duracionMin);
-        
-        let respuesta = `⚠️ Lo siento, la hora ${formatearHora(bookingData.hora_inicio)} ya está ocupada.`;
-        
-        if (alternativas.length > 0) {
-          respuesta += '\n\n🕐 *Horarios disponibles:*\n';
-          alternativas.forEach((h, i) => {
-            respuesta += `${i + 1}. ${formatearHora(h)}\n`;
-          });
-          respuesta += '\n¿Cuál te queda mejor?';
-        } else {
-          respuesta += '\n\nNo hay horarios disponibles para ese día. ¿Prefieres otro día?';
-        }
-        
-        return respuesta;
-      }
-      
-      bookingData.id = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-      bookingData.chatId = chatId;
-      bookingData.createdAt = new Date().toISOString();
-      bookingData.status = 'confirmed';
-
-      const bookings = await readBookings();
-      
-      if (!Array.isArray(bookings)) {
-        console.error('⚠️ bookings no es un array, reinicializando...');
-        await writeBookings([bookingData]);
-      } else {
-        bookings.push(bookingData);
-        await writeBookings(bookings);
-      }
-
-      const reservas = await readReservas();
-      reservas[bookingData.fecha] = reservas[bookingData.fecha] || [];
-      
-      for (const slot of check.slots) {
-        if (!reservas[bookingData.fecha].includes(slot)) {
-          reservas[bookingData.fecha].push(slot);
-        }
-      }
-      
-      await writeReservas(reservas);
-
-      await programarConfirmacion(bookingData);
-      await programarRecordatorio(bookingData);
-      await programarResena(bookingData);
-      await programarExtranamos(bookingData);
-      
-      // 🔥 FIX: Notificación robusta al dueño
-      console.log('[📢 NOTIF] ========================================');
-      console.log('[📢 NOTIF] INTENT TO NOTIFY OWNER');
-      console.log('[📢 NOTIF] Owner Chat ID:', OWNER_CHAT_ID);
-      console.log('[📢 NOTIF] From Chat ID:', chatId);
-      console.log('[📢 NOTIF] Client Ready:', !!client?.info);
-      console.log('[📢 NOTIF] Booking:', bookingData.id);
-      console.log('[📢 NOTIF] ========================================');
-      
-      try {
-        await notificarDueno(
-          `📅 *Nueva cita*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
-          chatId
-        );
-        console.log('[✅ NOTIF] Notificación enviada exitosamente');
-      } catch (notifError) {
-        console.error('[❌ NOTIF] Error enviando notificación:', notifError.message);
-        // Intentar de nuevo con timeout
-        setTimeout(async () => {
-          try {
-            await notificarDueno(
-              `📅 *Nueva cita (reintento)*\n👤 ${bookingData.nombreCliente}\n✂️ ${bookingData.servicio}\n📆 ${bookingData.fecha}\n⏰ ${formatearHora(bookingData.hora_inicio)}`,
-              chatId
-            );
-          } catch (e) {
-            console.error('[❌ NOTIF] Reintento falló:', e.message);
-          }
-        }, 2000);
-      }
-      
-      console.log('✅ Booking guardado:', bookingData.id);
-    } catch (e) { 
-      console.error('BOOKING parse error:', e); 
-    }
-    return mensaje.replace(/<BOOKING:[^>]+>/, '').trim();
-  }
-
-  if (cancelMatch) {
-    try {
-      // 🔥 FIX: Handle both escaped and unescaped quotes
-      let jsonStr = cancelMatch[1];
-      
-      // Remove backslashes before quotes
-      jsonStr = jsonStr.replace(/\\"/g, '"');
-      
-      // If still has single quotes, replace them
-      if (jsonStr.includes("'")) {
-        jsonStr = jsonStr.replace(/'/g, '"');
-      }
-      
-      console.log('[🗑️ CANCEL] JSON raw:', jsonStr);
-      
-      const cancelData = JSON.parse(jsonStr);
-      console.log('[🔥 CANCELACIÓN] Datos recibidos:', JSON.stringify(cancelData, null, 2));
-      
-      const bookings = await readBookings();
-      console.log('[🔥 CANCELACIÓN] Total de citas en sistema:', bookings.length);
-      
-      // 🔥 BÚSQUEDA MEJORADA: Sin normalización agresiva
-      let b = null;
-      
-      if (cancelData.id) {
-        console.log('[🔥 CANCELACIÓN] Buscando por ID:', cancelData.id);
-        b = bookings.find(x => x.id === cancelData.id && x.status !== 'cancelled');
-      } else if (cancelData.nombreCliente && cancelData.fecha && cancelData.hora_inicio) {
-        console.log('[🔥 CANCELACIÓN] Buscando por nombre/fecha/hora');
-        
-        const nombreLower = cancelData.nombreCliente.toLowerCase().trim();
-        
-        b = bookings.find(x => {
-          if (x.status === 'cancelled') return false;
-          
-          const nombreCitaLower = x.nombreCliente.toLowerCase().trim();
-          
-          // Match más flexible: contiene o es contenido
-          const matchNombre = nombreCitaLower.includes(nombreLower) || nombreLower.includes(nombreCitaLower);
-          const matchFecha = x.fecha === cancelData.fecha;
-          const matchHora = x.hora_inicio === cancelData.hora_inicio;
-          
-          console.log(`[🔥 CANCELACIÓN] Comparando:`, {
-            citaNombre: x.nombreCliente,
-            buscando: cancelData.nombreCliente,
-            matchNombre,
-            matchFecha,
-            matchHora
-          });
-          
-          return matchNombre && matchFecha && matchHora;
-        });
-      }
-      
-      if (b) {
-        console.log('[✅ CANCELACIÓN] Cita encontrada:', b.id);
-        b.status = 'cancelled';
-        await writeBookings(bookings);
-        
-        // Liberar slots
-        const reservas = await readReservas();
-        if (reservas[b.fecha]) {
-          const duracionMin = BARBERIA_CONFIG?.servicios?.[b.servicio]?.min || 40;
-          const slotsOcupados = calcularSlotsUsados(b.hora_inicio, duracionMin);
-          
-          console.log('[🔥 CANCELACIÓN] Liberando slots:', slotsOcupados);
-          reservas[b.fecha] = reservas[b.fecha].filter(slot => !slotsOcupados.includes(slot));
-          await writeReservas(reservas);
-        }
-        
-        // 🔥 NOTIFICAR AL DUEÑO (SIEMPRE, se filtra dentro de notificarDueno)
-        console.log('[📤 CANCELACIÓN] ========================================');
-        console.log('[📤 CANCELACIÓN] INTENT TO NOTIFY CANCELLATION');
-        console.log('[📤 CANCELACIÓN] Owner Chat ID:', OWNER_CHAT_ID);
-        console.log('[📤 CANCELACIÓN] From Chat ID:', chatId);
-        console.log('[📤 CANCELACIÓN] Client Ready:', !!client?.info);
-        console.log('[📤 CANCELACIÓN] Booking:', b.id);
-        console.log('[📤 CANCELACIÓN] ========================================');
-        
-        const textoNotificacion = `❌ *Cita cancelada*\n👤 ${b.nombreCliente}\n✂️ ${b.servicio}\n📆 ${b.fecha}\n⏰ ${formatearHora(b.hora_inicio)}`;
-        await notificarDueno(textoNotificacion, chatId);
-        
-        console.log('[✅ CANCELACIÓN] Booking cancelado:', b.id);
-      } else {
-        console.warn('[⚠️ CANCELACIÓN] No se encontró cita con datos:', cancelData);
-        return "No pude encontrar la cita que mencionas para cancelar. ¿Puedes confirmar el nombre, fecha y hora exactos?";
-      }
-    } catch (e) { 
-      console.error('[❌ CANCELACIÓN] Error:', e.message, e.stack); 
-    }
-    return mensaje.replace(/<CANCELLED:[^>]+>/, '').trim();
-  }
-
-  return mensaje;
-}
-
-// ========== NOTIFICAR AL DUEÑO (VERSION CORREGIDA) ==========
-async function notificarDueno(txt, fromChatId = null) {
-  console.log('[📢 NOTIF] ===== FUNCTION CALLED =====');
-  console.log('[📢 NOTIF] Text:', txt.substring(0, 50));
-  console.log('[📢 NOTIF] From:', fromChatId);
-  console.log('[📢 NOTIF] Owner:', OWNER_CHAT_ID);
-  
-  try {
-    // 🔥 VALIDACIÓN CRÍTICA 1: Verificar que el cliente esté inicializado
-    if (!client || !client.info) {
-      console.error('[❌ NOTIFICACIÓN] Cliente de WhatsApp NO está listo todavía');
-      console.error('[❌ NOTIFICACIÓN] client existe:', !!client);
-      console.error('[❌ NOTIFICACIÓN] client.info existe:', !!client?.info);
-      return;
-    }
-    
-    // 🔥 VALIDACIÓN 2: No notificar si el dueño hace la acción
-    if (fromChatId === OWNER_CHAT_ID) {
-      console.log('[ℹ️ NOTIFICACIÓN] Acción del dueño - no se auto-notifica');
-      return;
-    }
-    
-    console.log(`[📤 NOTIFICACIÓN] ===================`);
-    console.log(`[📤 NOTIFICACIÓN] Enviando a: ${OWNER_CHAT_ID}`);
-    console.log(`[📤 NOTIFICACIÓN] Mensaje: ${txt.substring(0, 80)}...`);
-    console.log(`[📤 NOTIFICACIÓN] Origen: ${fromChatId || 'sistema'}`);
-    console.log(`[📤 NOTIFICACIÓN] Cliente listo: ${!!client?.info}`);
-    
-    // 🔥 ENVÍO CON TIMEOUT de 15 segundos
-    const sendPromise = client.sendMessage(OWNER_CHAT_ID, txt);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Timeout: no respuesta en 15s')), 15000)
-    );
-    
-    await Promise.race([sendPromise, timeoutPromise]);
-    
-    console.log('[✅ NOTIFICACIÓN] ¡Enviada exitosamente!'); 
-    console.log(`[✅ NOTIFICACIÓN] ===================`);
-  }
-  catch (e) { 
-    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
-    console.error('[❌ NOTIFICACIÓN] FALLÓ EL ENVÍO');
-    console.error('[❌ NOTIFICACIÓN] Error:', e.message);
-    console.error('[❌ NOTIFICACIÓN] Tipo error:', e.constructor.name);
-    console.error('[❌ NOTIFICACIÓN] Stack completo:', e.stack);
-    console.error('[❌ NOTIFICACIÓN] OWNER_CHAT_ID:', OWNER_CHAT_ID);
-    console.error('[❌ NOTIFICACIÓN] fromChatId:', fromChatId);
-    console.error('[❌ NOTIFICACIÓN] Cliente estado:', {
-      existe: !!client,
-      info: !!client?.info,
-      pupBrowser: !!client?.pupBrowser,
-      authenticated: client?.info?.wid !== undefined
-    });
-    console.error('[❌ NOTIFICACIÓN] ×××××××××××××××××××××××');
-  }
-}
-
-// ========== DETECCIÓN AUTOMÁTICA DE CITAS (POST-OPENAI) ==========
-async function detectarYCrearCitaAutomatica(conversationHistory, lastResponse, chatId) {
-  try {
-    // Solo intentar si la respuesta de OpenAI sugiere confirmación de cita
-    const respLower = lastResponse.toLowerCase();
-    const esConfirmacion = respLower.includes('agend') || respLower.includes('confirm') || 
-                          respLower.includes('reserv') || respLower.includes('listo') ||
-                          respLower.includes('perfect');
-    
-    if (!esConfirmacion) return;
-    
-    console.log('[🔍 AUTO-CITA] Analizando conversación para extraer datos...');
-    
-    // Analizar últimos 10 mensajes
-    const ultimos = conversationHistory.slice(-10);
-    
-    let servicio = null;
-    let fecha = null;
-    let hora = null;
-    let nombre = null;
-    
-    const serviciosValidos = Object.keys(BARBERIA_CONFIG?.servicios || {});
-    const ahora = now();
-    
-    for (const msg of ultimos) {
-      const texto = (msg.content || '').toLowerCase();
-      
-      // Buscar servicio
-      if (!servicio) {
-        for (const srv of serviciosValidos) {
-          const srvLower = srv.toLowerCase();
-          // Buscar coincidencias exactas o por palabras clave
-          if (texto.includes(srvLower) || 
-              texto.includes(srvLower.replace(' ', ''))) {
-            servicio = srv;
-            console.log('[🔍 AUTO-CITA] Servicio encontrado (exacto):', servicio);
-            break;
-          }
-          
-          // 🔥 FIX: Buscar por palabras clave individuales
-          const palabrasClave = srvLower.split(' ');
-          const tieneTodasLasPalabras = palabrasClave.every(p => texto.includes(p));
-          if (tieneTodasLasPalabras) {
-            servicio = srv;
-            console.log('[🔍 AUTO-CITA] Servicio encontrado (keywords):', servicio);
-            break;
-          }
-          
-          // 🔥 FIX: Si menciona solo "corte", asignar "corte clásico"
-          if (texto.includes('corte') && srvLower.includes('corte') && srvLower.includes('clásico')) {
-            servicio = srv;
-            console.log('[🔍 AUTO-CITA] Servicio asumido (corte -> corte clásico):', servicio);
-            break;
-          }
-          
-          // Si menciona "barba" sola, asignar "barba completa"
-          if (texto.includes('barba') && !texto.includes('corte') && srvLower === 'barba completa') {
-            servicio = srv;
-            console.log('[🔍 AUTO-CITA] Servicio asumido (barba -> barba completa):', servicio);
-            break;
-          }
-        }
-      }
-      
-      // Buscar hora (formato flexible: 9am, 9:00, 15:00, etc)
-      if (!hora) {
-        const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
-        if (horaMatch) {
-          let h = parseInt(horaMatch[1]);
-          const m = horaMatch[2] || '00';
-          const ampm = horaMatch[3]?.toLowerCase();
-          
-          // Convertir a 24h
-          if (ampm === 'pm' && h < 12) h += 12;
-          if (ampm === 'am' && h === 12) h = 0;
-          
-          // Validar horario (9 AM a 8 PM)
-          if (h >= 9 && h < 20) {
-            hora = `${String(h).padStart(2, '0')}:${m}`;
-            console.log('[🔍 AUTO-CITA] Hora encontrada:', hora);
-          }
-        }
-      }
-      
-      // Buscar fecha (palabras clave)
-      if (!fecha) {
-        if (texto.includes('mañana') || texto.includes('tomorrow')) {
-          fecha = ahora.plus({ days: 1 }).toFormat('yyyy-MM-dd');
-          console.log('[🔍 AUTO-CITA] Fecha: mañana ->', fecha);
-        } else if (texto.includes('hoy') || texto.includes('today')) {
-          fecha = ahora.toFormat('yyyy-MM-dd');
-          console.log('[🔍 AUTO-CITA] Fecha: hoy ->', fecha);
-        } else if (texto.includes('pasado mañana')) {
-          fecha = ahora.plus({ days: 2 }).toFormat('yyyy-MM-dd');
-          console.log('[🔍 AUTO-CITA] Fecha: pasado mañana ->', fecha);
-        }
-      }
-      
-      // Buscar nombre (solo en mensajes del usuario)
-      if (!nombre && msg.role === 'user') {
-        // Intentar extraer nombre después de palabras clave
-        const nombreMatch = texto.match(/(?:soy|nombre|llamo|me llamo)\s+([a-záéíóúñ\s]{2,30})/i);
-        if (nombreMatch) {
-          nombre = nombreMatch[1].trim();
-          // Capitalizar primera letra
-          nombre = nombre.split(' ').map(p => 
-            p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
-          ).join(' ');
-          console.log('[🔍 AUTO-CITA] Nombre encontrado:', nombre);
-        } else {
-          // Buscar palabras capitalizadas
-          const palabras = msg.content.split(/\s+/);
-          for (const palabra of palabras) {
-            if (/^[A-ZÁÉÍÓÚÑ'][a-záéíóúñ]{2,}$/.test(palabra) && 
-                palabra.length > 2 && 
-                !['Para', 'Quiero', 'Hola', 'Buenos', 'Días'].includes(palabra)) {
-              nombre = palabra;
-              console.log('[🔍 AUTO-CITA] Nombre por capitalización:', nombre);
-              break;
-            }
-          }
-        }
-      }
-    }
-    
-    // Verificar si tenemos todos los datos
-    if (!servicio || !fecha || !hora || !nombre) {
-      console.log('[🔍 AUTO-CITA] Datos incompletos:', { servicio, fecha, hora, nombre });
-      return;
-    }
-    
-    // Verificar si ya existe una cita similar (evitar duplicados)
-    const bookings = await readBookings();
-    const citaExistente = bookings.find(b => 
-      b.chatId === chatId && 
-      b.fecha === fecha && 
-      b.hora_inicio === hora &&
-      b.status !== 'cancelled'
-    );
-    
-    if (citaExistente) {
-      console.log('[🔍 AUTO-CITA] Ya existe cita similar, no duplicar');
-      return;
-    }
-    
-    console.log('[🔥 AUTO-CITA] ¡Todos los datos completos! Creando cita...');
-    
-    // Verificar disponibilidad
-    const duracionMin = BARBERIA_CONFIG?.servicios?.[servicio]?.min || 40;
-    const check = await verificarDisponibilidad(fecha, hora, duracionMin);
-    if (!check.disponible) {
-      console.log('[❌ AUTO-CITA] Horario no disponible');
-      return;
-    }
-    
-    // Crear la cita
-    const bookingData = {
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      chatId,
-      nombreCliente: nombre,
-      servicio,
-      fecha,
-      hora_inicio: hora,
-      createdAt: new Date().toISOString(),
-      status: 'confirmed'
-    };
-    
-    bookings.push(bookingData);
-    await writeBookings(bookings);
-    
-    // Reservar slots
-    const reservas = await readReservas();
-    const slotsOcupados = calcularSlotsUsados(hora, duracionMin);
-    if (!reservas[fecha]) reservas[fecha] = [];
-    reservas[fecha].push(...slotsOcupados);
-    await writeReservas(reservas);
-    
-    // Programar mensajes
-    await programarConfirmacion(bookingData);
-    await programarRecordatorio(bookingData);
-    await programarResena(bookingData);
-    await programarExtranamos(bookingData);
-    
-    // 🔥 NOTIFICAR AL DUEÑO
-    console.log('[🔥 AUTO-CITA] Notificando al dueño...');
-    await notificarDueno(
-      `📅 *Nueva cita (auto-detectada)*\n👤 ${nombre}\n✂️ ${servicio}\n📆 ${fecha}\n⏰ ${formatearHora(hora)}`,
-      chatId
-    );
-    
-    console.log('[✅ AUTO-CITA] Cita creada exitosamente:', bookingData.id);
-    
-  } catch (e) {
-    console.error('[❌ AUTO-CITA] Error:', e.message);
-  }
-}
-
-// ========== CANCELACIÓN DIRECTA (SIN DEPENDER DE OPENAI) ==========
-async function manejarCancelacionDirecta(userMessage, chatId) {
-  const msgLower = userMessage.toLowerCase().trim();
-  const state = getUserState(chatId);
-  
-  // 🔥 CASO 1: Si está esperando confirmación de cancelación
-  if (state.esperandoConfirmacionCancelacion && state.citaParaCancelar) {
-    const confirma = msgLower === 'si' || msgLower === 'sí' || 
-                     msgLower === 'confirmo' || msgLower === 'dale' ||
-                     msgLower === 'ok' || msgLower === 'yes';
-    
-    console.log('[🔥 CANCELACIÓN DIRECTA] Esperando confirmación, usuario dice:', msgLower);
-    console.log('[🔥 CANCELACIÓN DIRECTA] Confirma:', confirma);
-    
-    if (confirma) {
-      const cita = state.citaParaCancelar;
-      
-      // Cancelar la cita
-      const bookings = await readBookings();
-      const citaIndex = bookings.findIndex(b => b.id === cita.id);
-      if (citaIndex !== -1) {
-        bookings[citaIndex].status = 'cancelled';
-        await writeBookings(bookings);
-        
-        console.log('[🔥 CANCELACIÓN DIRECTA] Cita marcada como cancelada:', cita.id);
-        
-        // Liberar slots
-        const reservas = await readReservas();
-        if (reservas[cita.fecha]) {
-          const duracionMin = BARBERIA_CONFIG?.servicios?.[cita.servicio]?.min || 40;
-          const slotsOcupados = calcularSlotsUsados(cita.hora_inicio, duracionMin);
-          reservas[cita.fecha] = reservas[cita.fecha].filter(slot => !slotsOcupados.includes(slot));
-          await writeReservas(reservas);
-          console.log('[🔥 CANCELACIÓN DIRECTA] Slots liberados:', slotsOcupados);
-        }
-        
-        // Notificar al dueño
-        console.log('[🔥 CANCELACIÓN DIRECTA] Enviando notificación al dueño...');
-        await notificarDueno(
-          `❌ *Cita cancelada*\n👤 ${cita.nombreCliente}\n✂️ ${cita.servicio}\n📆 ${cita.fecha}\n⏰ ${formatearHora(cita.hora_inicio)}`,
-          chatId
-        );
-        
-        state.esperandoConfirmacionCancelacion = false;
-        state.citaParaCancelar = null;
-        console.log('[✅ CANCELACIÓN DIRECTA] Proceso completo');
-        
-        return `✅ Listo, tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} ha sido cancelada. Si necesitas reprogramar, avísame. 😊`;
-      }
-    } else {
-      state.esperandoConfirmacionCancelacion = false;
-      state.citaParaCancelar = null;
-      return "Ok, tu cita sigue activa. ¿En qué más puedo ayudarte?";
-    }
-  }
-  
-  // 🔥 CASO 2: Si tiene lista de citas y responde con número
-  if (state.citasParaCancelar && state.citasParaCancelar.length > 0) {
-    // Intentar extraer número del mensaje
-    const numeroMatch = userMessage.match(/\b(\d+)\b/);
-    
-    if (numeroMatch) {
-      const numero = parseInt(numeroMatch[1]);
-      console.log('[🔥 CANCELACIÓN DIRECTA] Usuario seleccionó número:', numero);
-      
-      if (numero >= 1 && numero <= state.citasParaCancelar.length) {
-        const cita = state.citasParaCancelar[numero - 1];
-        
-        // Preguntar confirmación
-        state.esperandoConfirmacionCancelacion = true;
-        state.citaParaCancelar = cita;
-        state.citasParaCancelar = null;
-        
-        console.log('[🔥 CANCELACIÓN DIRECTA] Preguntando confirmación para:', cita.id);
-        return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
-      } else {
-        return `Por favor responde con un número entre 1 y ${state.citasParaCancelar.length}.`;
-      }
-    }
-    
-    // Si no es número, limpiar estado y continuar
-    state.citasParaCancelar = null;
-  }
-  
-  // 🔥 CASO 3: Detectar palabras de cancelación
-  const palabrasCancelacion = [
-    'cancelar',
-    'cancela',
-    'cancelarla',
-    'cancelarlo',
-    'quitar la cita',
-    'anular',
-    'no puedo ir',
-    'no voy a poder'
-  ];
-  
-  const esCancelacion = palabrasCancelacion.some(p => msgLower.includes(p));
-  
-  if (!esCancelacion) {
-    return null; // No es cancelación, continuar normal
-  }
-  
-  console.log('[🔥 CANCELACIÓN DIRECTA] Detectada palabra de cancelación');
-  
-  // Buscar citas activas del usuario
-  const bookings = await readBookings();
-  const ahora = now();
-  
-  const citasActivas = bookings.filter(b => {
-    if (b.chatId !== chatId || b.status === 'cancelled') return false;
-    
-    // Filtrar citas pasadas
-    const [year, month, day] = b.fecha.split('-').map(Number);
-    const [hour, minute] = b.hora_inicio.split(':').map(Number);
-    const fechaHoraCita = DateTime.fromObject(
-      { year, month, day, hour, minute }, 
-      { zone: TIMEZONE }
-    );
-    
-    return fechaHoraCita > ahora;
-  });
-  
-  console.log('[🔥 CANCELACIÓN DIRECTA] Citas activas del usuario:', citasActivas.length);
-  
-  if (citasActivas.length === 0) {
-    return "No encontré ninguna cita activa futura para cancelar. ¿Necesitas ayuda con algo más?";
-  }
-  
-  // 🔥 CASO 4: Intentar detectar fecha/hora específica en el mensaje
-  // Ejemplo: "cancelar cita del 24" o "cancelar cita de mañana" o "cancelar la de 7:20 PM"
-  
-  // Buscar por hora (7:20, 19:20, etc)
-  const horaMatch = userMessage.match(/(\d{1,2}):?(\d{2})\s*(am|pm)?/i);
-  if (horaMatch) {
-    let hora = parseInt(horaMatch[1]);
-    const minuto = horaMatch[2];
-    const ampm = horaMatch[3]?.toLowerCase();
-    
-    // Convertir a 24h si es necesario
-    if (ampm === 'pm' && hora < 12) hora += 12;
-    if (ampm === 'am' && hora === 12) hora = 0;
-    
-    const horaStr = `${String(hora).padStart(2, '0')}:${minuto}`;
-    
-    const citaPorHora = citasActivas.find(c => c.hora_inicio === horaStr);
-    if (citaPorHora) {
-      console.log('[🔥 CANCELACIÓN DIRECTA] Encontrada cita por hora:', horaStr);
-      state.esperandoConfirmacionCancelacion = true;
-      state.citaParaCancelar = citaPorHora;
-      return `¿Me confirmas que deseas cancelar tu cita del ${citaPorHora.fecha} a las ${formatearHora(citaPorHora.hora_inicio)} para ${citaPorHora.servicio}?\n\nResponde "sí" para confirmar.`;
-    }
-  }
-  
-  // Buscar por fecha (2025-10-24, 24, etc)
-  const fechaMatch = userMessage.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2})/);
-  if (fechaMatch) {
-    const fechaBuscada = fechaMatch[1] || `${ahora.year}-${String(ahora.month).padStart(2, '0')}-${String(fechaMatch[2]).padStart(2, '0')}`;
-    
-    const citasPorFecha = citasActivas.filter(c => c.fecha === fechaBuscada);
-    if (citasPorFecha.length === 1) {
-      const cita = citasPorFecha[0];
-      console.log('[🔥 CANCELACIÓN DIRECTA] Encontrada cita por fecha:', fechaBuscada);
-      state.esperandoConfirmacionCancelacion = true;
-      state.citaParaCancelar = cita;
-      return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
-    }
-  }
-  
-  // Si tiene solo 1 cita, preguntar directamente
-  if (citasActivas.length === 1) {
-    const cita = citasActivas[0];
-    state.esperandoConfirmacionCancelacion = true;
-    state.citaParaCancelar = cita;
-    console.log('[🔥 CANCELACIÓN DIRECTA] Solo 1 cita, preguntando confirmación');
-    return `¿Me confirmas que deseas cancelar tu cita del ${cita.fecha} a las ${formatearHora(cita.hora_inicio)} para ${cita.servicio}?\n\nResponde "sí" para confirmar.`;
-  }
-  
-  // Si tiene múltiples citas, listarlas
-  let msg = "Tienes varias citas activas:\n\n";
-  citasActivas.forEach((c, i) => {
-    msg += `${i+1}. ${c.servicio} - ${c.fecha} a las ${formatearHora(c.hora_inicio)}\n`;
-  });
-  msg += "\n¿Cuál deseas cancelar? Responde con:\n- El número (ej: 1)\n- La fecha (ej: 24)\n- La hora (ej: 7:20 PM)";
-  
-  state.citasParaCancelar = citasActivas;
-  
-  return msg;
-}
-
-// ========== PROGRAMACIONES ==========
-async function programarConfirmacion(booking) {
-  try {
-    const [y,m,d] = booking.fecha.split('-').map(Number); 
-    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
-    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
-    const when = cita.minus({ hours: 2 });
-    
-    if (when > now()) {
-      const messages = await readScheduledMessages();
-      messages.push({ 
-        id: `confirm_${booking.id}`, 
-        chatId: booking.chatId, 
-        scheduledFor: when.toISO(), 
-        type: 'confirmation', 
-        message: `👋 Hola ${booking.nombreCliente}! Te recordamos tu cita de *${booking.servicio}* hoy a las ${formatearHora(booking.hora_inicio)}.\n\n¿Confirmas que asistirás? Responde *SI* o *NO*.`, 
-        bookingId: booking.id 
-      });
-      await writeScheduledMessages(messages); 
-      console.log('✅ Confirmación programada:', when.toISO());
-    }
-  } catch (e) { 
-    console.error('❌ Error programarConfirmacion:', e.message); 
-  }
-}
-
-async function programarRecordatorio(booking) {
-  try {
-    const [y,m,d] = booking.fecha.split('-').map(Number); 
-    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
-    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
-    const when = cita.minus({ minutes: 30 });
-    
-    if (when > now()) {
-      const messages = await readScheduledMessages();
-      messages.push({ 
-        id:`reminder_${booking.id}`, 
-        chatId: booking.chatId, 
-        scheduledFor: when.toISO(), 
-        type: 'reminder', 
-        message: `⏰ *Recordatorio*\n\nHola ${booking.nombreCliente}! Tu cita de *${booking.servicio}* es en 30 minutos (${formatearHora(booking.hora_inicio)}).\n\nNos vemos pronto! 💈`, 
-        bookingId: booking.id 
-      });
-      await writeScheduledMessages(messages); 
-      console.log('✅ Recordatorio programado:', when.toISO());
-    }
-  } catch (e) { 
-    console.error('❌ Error programarRecordatorio:', e.message); 
-  }
-}
-
-async function programarResena(booking) {
-  try {
-    const [y,m,d] = booking.fecha.split('-').map(Number); 
-    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
-    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
-    const when = cita.plus({ days: 1, hours: 2 });
-    
-    if (when > now()) {
-      const messages = await readScheduledMessages();
-      messages.push({ 
-        id:`review_${booking.id}`, 
-        chatId: booking.chatId, 
-        scheduledFor: when.toISO(), 
-        type: 'review', 
-        message: `⭐ Hola ${booking.nombreCliente}!\n\nEsperamos que hayas quedado contento con tu *${booking.servicio}* 😊\n\n¿Nos ayudas con una reseña en Google? Nos ayuda a crecer:\n\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias! 💈`, 
-        bookingId: booking.id 
-      });
-      await writeScheduledMessages(messages); 
-      console.log('✅ Reseña programada:', when.toISO());
-    }
-  } catch (e) { 
-    console.error('❌ Error programarResena:', e.message); 
-  }
-}
-
-async function programarExtranamos(booking) {
-  try {
-    const [y,m,d] = booking.fecha.split('-').map(Number); 
-    const [hh,mm] = booking.hora_inicio.split(':').map(Number);
-    const cita = DateTime.fromObject({ year:y, month:m, day:d, hour:hh, minute:mm }, { zone: TIMEZONE });
-    const when = cita.plus({ weeks: 2 });
-    
-    if (when > now()) {
-      const messages = await readScheduledMessages();
-      messages.push({ 
-        id:`winback_${booking.id}`, 
-        chatId: booking.chatId, 
-        scheduledFor: when.toISO(), 
-        type: 'winback', 
-        message: `👋 ${booking.nombreCliente}, te extrañamos! ¿Agendamos otra? 💈\n\n*10% OFF* en tu próxima cita!`, 
-        bookingId: booking.id 
-      });
-      await writeScheduledMessages(messages); 
-      console.log('✅ "Te extrañamos" programado:', when.toISO());
-    }
-  } catch (e) { 
-    console.error('❌ Error programarExtranamos:', e.message); 
-  }
-}
-
-// ========== ENVIAR MENSAJES PROGRAMADOS ==========
-setInterval(async () => {
-  try {
-    const messages = await readScheduledMessages();
-    const t = now();
-    const remain = [];
-    
-    for (const m of messages) {
-      const when = DateTime.fromISO(m.scheduledFor);
-      
-      if (when <= t) {
-        try { 
-          await client.sendMessage(m.chatId, m.message); 
-          console.log(`✅ Mensaje ${m.type} enviado:`, m.id); 
-        }
-        catch (e) { 
-          console.error('❌ Error enviando mensaje:', e.message); 
-          remain.push(m); 
-        }
-      } else {
-        remain.push(m);
-      }
-    }
-    
-    await writeScheduledMessages(remain);
-  } catch (e) { 
-    console.error('❌ Error en scheduler:', e.message); 
-  }
-}, 60000);
-
-// ========== GENERADORES PARA SYSTEM PROMPT ==========
-function generarTextoServicios() {
-  if (!BARBERIA_CONFIG?.servicios) return '';
-  return Object.entries(BARBERIA_CONFIG.servicios).map(([nombre, s]) => {
-    const precio = (s.precio || 0).toLocaleString('es-CO'); 
-    const min = s.min || 'N/A'; 
-    const emoji = s.emoji || '✂️';
-    return `${emoji} ${nombre} — ${precio} — ${min} min`;
-  }).join('\n');
-}
-
-function generarTextoFAQs() {
-  if (!BARBERIA_CONFIG?.faqs) return '';
-  return BARBERIA_CONFIG.faqs.map((f,i)=>`${i+1}. ${f.q}\n   → ${f.a}`).join('\n\n');
-}
-
-// ========== COMANDO /show bookings ==========
-async function mostrarReservas(chatId) {
-  try {
-    const bookings = await readBookings();
-    const ahora = now();
-    
-    const citasFuturas = bookings.filter(b => {
-      if (b.status === 'cancelled') return false;
-      
-      const [year, month, day] = b.fecha.split('-').map(Number);
-      const [hour, minute] = b.hora_inicio.split(':').map(Number);
-      const fechaHoraCita = DateTime.fromObject(
-        { year, month, day, hour, minute }, 
-        { zone: TIMEZONE }
-      );
-      
-      return fechaHoraCita > ahora;
-    });
-    
-    if (citasFuturas.length === 0) {
-      return '📅 *No hay citas programadas*\n\nNo tienes citas futuras en este momento.';
-    }
-    
-    citasFuturas.sort((a, b) => {
-      const dateA = new Date(a.fecha + 'T' + a.hora_inicio);
-      const dateB = new Date(b.fecha + 'T' + b.hora_inicio);
-      return dateA - dateB;
-    });
-    
-    let mensaje = '📅 *CITAS PROGRAMADAS*\n\n';
-    
-    citasFuturas.forEach((cita, index) => {
-      const [year, month, day] = cita.fecha.split('-').map(Number);
-      const fechaDT = DateTime.fromObject({ year, month, day }, { zone: TIMEZONE });
-      const fechaLegible = fechaDT.setLocale('es').toFormat('EEEE d \'de\' MMMM');
-      
-      mensaje += `${index + 1}. 👤 *${cita.nombreCliente}*\n`;
-      mensaje += `   ✂️ ${cita.servicio}\n`;
-      mensaje += `   📆 ${fechaLegible}\n`;
-      mensaje += `   ⏰ ${formatearHora(cita.hora_inicio)}\n\n`;
-    });
-    
-    return mensaje.trim();
-  } catch (error) {
-    console.error('❌ Error en mostrarReservas:', error);
-    return '❌ Error al cargar las reservas. Intenta de nuevo.';
-  }
-}
-
-// ========== COMANDO /send later ==========
-async function programarMensajePersonalizado(args, fromChatId) {
-  try {
-    const regex = /"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"/;
-    const match = args.match(regex);
-    
-    if (!match) {
-      return '❌ Formato incorrecto.\n\nUso:\n`/send later "573001234567" "2025-10-25 10:30" "Tu mensaje aquí"`\n\n📝 Formato de fecha: YYYY-MM-DD HH:MM';
-    }
-    
-    const [, numero, fechaHora, mensaje] = match;
-    
-    if (!/^\d{10,15}$/.test(numero)) {
-      return '❌ Número inválido. Debe incluir código de país sin + (ej: 573001234567)';
-    }
-    
-    const fechaHoraDT = DateTime.fromFormat(fechaHora, 'yyyy-MM-dd HH:mm', { zone: TIMEZONE });
-    
-    if (!fechaHoraDT.isValid) {
-      return '❌ Fecha/hora inválida.\n\nFormato: YYYY-MM-DD HH:MM\nEjemplo: 2025-10-25 14:30';
-    }
-    
-    if (fechaHoraDT <= now()) {
-      return '❌ La fecha/hora debe ser futura.';
-    }
-    
-    const messages = await readScheduledMessages();
-    const nuevoMensaje = {
-      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      chatId: `${numero}@c.us`,
-      scheduledFor: fechaHoraDT.toISO(),
-      type: 'custom',
-      message: mensaje,
-      scheduledBy: fromChatId
-    };
-    
-    messages.push(nuevoMensaje);
-    await writeScheduledMessages(messages);
-    
-    const fechaLegible = fechaHoraDT.setLocale('es').toFormat('EEEE d \'de\' MMMM \'a las\' HH:mm');
-    
-    return `✅ *Mensaje programado*\n\n📱 Para: ${numero}\n📅 ${fechaLegible}\n💬 "${mensaje}"\n\n🔔 Se enviará automáticamente.`;
-    
-  } catch (error) {
-    console.error('❌ Error en programarMensajePersonalizado:', error);
-    return '❌ Error al programar el mensaje. Revisa el formato.';
-  }
-}
-
-// ========== COMANDOS DE CONFIGURACIÓN ==========
-function deepMerge(target, source) {
-  for (const key in source) {
-    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-      target[key] = target[key] || {};
-      deepMerge(target[key], source[key]);
-    } else {
-      target[key] = source[key];
-    }
-  }
-  return target;
-}
-
-async function guardarConfigBarberia() {
-  try {
-    const contenido = JSON.stringify(BARBERIA_CONFIG, null, 2);
-    await fs.writeFile(BARBERIA_BASE_PATH, contenido, 'utf8');
-    console.log('✅ Configuración guardada en barberia_base.txt');
-    return true;
-  } catch (e) {
-    console.error('❌ Error guardando configuración:', e.message);
-    return false;
-  }
-}
-
-async function comandoConfigReload(fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño puede usar este comando.';
-  }
-  
-  await cargarConfigBarberia();
-  return `✅ *Configuración recargada*\n\n📋 Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}\n🏪 Negocio: ${BARBERIA_CONFIG?.negocio?.nombre || 'Sin nombre'}`;
-}
-
-async function comandoConfigSet(args, fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño puede usar este comando.';
-  }
-  
-  try {
-    const jsonMatch = args.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return '❌ No se encontró JSON válido.\n\nUso: `/config set "{\\"negocio\\":{\\"nombre\\":\\"Mi Barber\\"}}"}`';
-    }
-    
-    const updates = JSON.parse(jsonMatch[0]);
-    deepMerge(BARBERIA_CONFIG, updates);
-    
-    const guardado = await guardarConfigBarberia();
-    
-    if (guardado) {
-      return `✅ *Configuración actualizada*\n\n${JSON.stringify(updates, null, 2)}\n\n💾 Cambios guardados en disco.`;
-    } else {
-      return '⚠️ Configuración actualizada en memoria pero NO se pudo guardar en disco.';
-    }
-  } catch (e) {
-    return `❌ Error parseando JSON:\n${e.message}`;
-  }
-}
-
-async function comandoConfigAddServicio(args, fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño puede usar este comando.';
-  }
-  
-  const match = args.match(/"([^"]+)"\s+(\d+)\s+(\d+)\s+"([^"]+)"/);
-  if (!match) {
-    return '❌ Formato incorrecto.\n\nUso: `/config add servicio "Nombre" precio minutos "emoji"`\nEjemplo: `/config add servicio "Keratina" 120000 90 "✨"`';
-  }
-  
-  const [, nombre, precio, min, emoji] = match;
-  
-  BARBERIA_CONFIG.servicios = BARBERIA_CONFIG.servicios || {};
-  BARBERIA_CONFIG.servicios[nombre] = {
-    precio: parseInt(precio),
-    min: parseInt(min),
-    emoji: emoji
-  };
-  
-  const guardado = await guardarConfigBarberia();
-  
-  if (guardado) {
-    return `✅ *Servicio añadido*\n\n${emoji} ${nombre}\n💰 ${parseInt(precio).toLocaleString('es-CO')}\n⏱️ ${min} min\n\n💾 Guardado en disco.`;
-  } else {
-    return '⚠️ Servicio añadido en memoria pero NO se pudo guardar en disco.';
-  }
-}
-
-async function comandoConfigEditServicio(args, fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño puede usar este comando.';
-  }
-  
-  const matchNombre = args.match(/"([^"]+)"/);
-  if (!matchNombre) {
-    return '❌ Debes especificar el nombre del servicio entre comillas.\n\nUso: `/config edit servicio "Nombre" precio=NN min=MM emoji="X"`';
-  }
-  
-  const nombre = matchNombre[1];
-  
-  if (!BARBERIA_CONFIG.servicios?.[nombre]) {
-    return `❌ El servicio "${nombre}" no existe.`;
-  }
-  
-  const precioMatch = args.match(/precio=(\d+)/);
-  const minMatch = args.match(/min=(\d+)/);
-  const emojiMatch = args.match(/emoji="([^"]+)"/);
-  
-  if (precioMatch) BARBERIA_CONFIG.servicios[nombre].precio = parseInt(precioMatch[1]);
-  if (minMatch) BARBERIA_CONFIG.servicios[nombre].min = parseInt(minMatch[1]);
-  if (emojiMatch) BARBERIA_CONFIG.servicios[nombre].emoji = emojiMatch[1];
-  
-  const guardado = await guardarConfigBarberia();
-  
-  const s = BARBERIA_CONFIG.servicios[nombre];
-  if (guardado) {
-    return `✅ *Servicio actualizado*\n\n${s.emoji} ${nombre}\n💰 ${s.precio.toLocaleString('es-CO')}\n⏱️ ${s.min} min\n\n💾 Guardado en disco.`;
-  } else {
-    return '⚠️ Servicio actualizado en memoria pero NO se pudo guardar en disco.';
-  }
-}
-
-async function comandoConfigDelServicio(args, fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño puede usar este comando.';
-  }
-  
-  const match = args.match(/"([^"]+)"/);
-  if (!match) {
-    return '❌ Debes especificar el nombre del servicio entre comillas.\n\nUso: `/config del servicio "Nombre"`';
-  }
-  
-  const nombre = match[1];
-  
-  if (!BARBERIA_CONFIG.servicios?.[nombre]) {
-    return `❌ El servicio "${nombre}" no existe.`;
-  }
-  
-  delete BARBERIA_CONFIG.servicios[nombre];
-  
-  const guardado = await guardarConfigBarberia();
-  
-  if (guardado) {
-    return `✅ *Servicio eliminado*\n\n"${nombre}" ha sido eliminado.\n\n💾 Guardado en disco.`;
-  } else {
-    return '⚠️ Servicio eliminado en memoria pero NO se pudo guardar en disco.';
-  }
-}
-
-async function comandoSetOwner(args, fromChatId) {
-  if (fromChatId !== OWNER_CHAT_ID) {
-    return '❌ Solo el dueño actual puede cambiar el owner.';
-  }
-  
-  const match = args.match(/"?(\d{10,15})"?/);
-  if (!match) {
-    return '❌ Formato incorrecto.\n\nUso: `/set owner "573223698554"`\n\n⚠️ Este cambio es temporal. Para que persista, actualiza OWNER_NUMBER en tu .env';
-  }
-  
-  const nuevoOwner = match[1];
-  OWNER_NUMBER = nuevoOwner;
-  OWNER_CHAT_ID = `${nuevoOwner}@c.us`;
-  
-  return `✅ *Owner cambiado temporalmente*\n\n📱 Nuevo owner: ${nuevoOwner}\n\n⚠️ *Importante:* Este cambio solo dura hasta que reinicies el bot.\n\nPara hacerlo permanente, actualiza tu archivo .env:\n\`\`\`\nOWNER_NUMBER=${nuevoOwner}\n\`\`\``;
-}
-
-// ========== COMANDO /ayuda ==========
-function mostrarAyuda(fromChatId) {
-  const esDueno = fromChatId === OWNER_CHAT_ID;
-  
-  let ayuda = `🤖 *COMANDOS DISPONIBLES*
-
-📋 *Generales:*
-• /ayuda - Muestra este mensaje
-• /bot off - Desactiva el bot
-• /bot on - Reactiva el bot
-
-🧪 *Demo:*
-• /start test - Inicia modo demo (Barbería)
-• /end test - Finaliza demo y vuelve a ventas
-
-📅 *Gestión:*
-• /show bookings - Ver citas programadas
-
-⏰ *Programación:*
-• /send later "número" "fecha hora" "mensaje"
-  Ejemplo: /send later "573001234567" "2025-10-25 14:30" "Hola!"`;
-
-  if (esDueno) {
-    ayuda += `
-
-🔧 *Configuración (Solo dueño):*
-• /config reload - Recargar configuración desde archivo
-• /config set "<json>" - Actualizar configuración
-• /config add servicio "Nombre" precio minutos "emoji"
-• /config edit servicio "Nombre" [precio=NN] [min=MM] [emoji="X"]
-• /config del servicio "Nombre"
-• /set owner "número" - Cambiar dueño (temporal)`;
-  }
-
-  ayuda += `
-
-💡 *Nota:* Los comandos solo funcionan en modo texto.`;
-
-  return ayuda;
-}
-
-// ========== TRANSCRIPCIÓN DE AUDIO ==========
-async function transcribeVoiceFromMsg(msg) {
-  try {
-    const media = await msg.downloadMedia();
-    if (!media || !media.data) return null;
-    
-    const ext = (media.mimetype || '').includes('ogg') ? 'ogg' : 'mp3';
-    const tmpPath = path.join(DATA_DIR, `voice_${Date.now()}.${ext}`);
-    await fs.writeFile(tmpPath, Buffer.from(media.data, 'base64'));
-
-    try {
-      console.log(`[Audio] Transcribiendo ${tmpPath}...`);
-      const resp = await openai.audio.transcriptions.create({
-        file: fssync.createReadStream(tmpPath),
-        model: 'whisper-1',
-        language: 'es'
-      });
-      console.log(`[Audio] Transcrito: "${resp.text}"`);
-      return (resp.text || '').trim();
-    } finally {
-      await fs.unlink(tmpPath).catch(() => {});
-    }
-  } catch (err) {
-    console.error('[Audio] Error transcribiendo:', err);
-    return null;
-  }
-}
-
-// ========== CHAT CORE ==========
-async function chatWithAI(userMessage, userId, chatId) {
-  const state = getUserState(userId);
-
-  const msgLower = userMessage.toLowerCase();
-  
-  if (msgLower.includes('/ayuda') || msgLower.includes('/help')) {
-    return mostrarAyuda(chatId);
-  }
-  
-  if (msgLower.includes('/bot off')) { 
-    state.botEnabled = false; 
-    return '✅ Bot desactivado. Escribe `/bot on` para reactivarlo.'; 
-  }
-  
-  if (msgLower.includes('/bot on')) { 
-    state.botEnabled = true; 
-    return '✅ Bot reactivado. Estoy aquí para ayudarte 24/7 💪'; 
-  }
-  
-  if (msgLower.includes('/show bookings')) { 
-    return await mostrarReservas(chatId); 
-  }
-  
-  if (msgLower.startsWith('/send later')) { 
-    const args = userMessage.replace(/\/send later/i, '').trim(); 
-    return await programarMensajePersonalizado(args, chatId); 
-  }
-  
-  if (msgLower.startsWith('/config reload')) {
-    return await comandoConfigReload(chatId);
-  }
-  
-  if (msgLower.startsWith('/config set')) {
-    const args = userMessage.replace(/\/config set/i, '').trim();
-    return await comandoConfigSet(args, chatId);
-  }
-  
-  if (msgLower.startsWith('/config add servicio')) {
-    const args = userMessage.replace(/\/config add servicio/i, '').trim();
-    return await comandoConfigAddServicio(args, chatId);
-  }
-  
-  if (msgLower.startsWith('/config edit servicio')) {
-    const args = userMessage.replace(/\/config edit servicio/i, '').trim();
-    return await comandoConfigEditServicio(args, chatId);
-  }
-  
-  if (msgLower.startsWith('/config del servicio')) {
-    const args = userMessage.replace(/\/config del servicio/i, '').trim();
-    return await comandoConfigDelServicio(args, chatId);
-  }
-  
-  if (msgLower.startsWith('/set owner')) {
-    const args = userMessage.replace(/\/set owner/i, '').trim();
-    return await comandoSetOwner(args, chatId);
-  }
-
-  if (!state.botEnabled) return null;
-
-  if (msgLower.includes('/start test')) { 
-    state.mode = 'demo'; 
-    state.conversationHistory = []; 
-    return '✅ *Demo activada*\n\nAhora hablas con el Asistente Cortex Barbershop. Prueba agendar una cita, consultar servicios, horarios, etc.\n\n💡 Escribe `/end test` para volver al modo ventas.'; 
-  }
-  
-  if (msgLower.includes('/end test')) { 
-    state.mode = 'sales'; 
-    state.conversationHistory = []; 
-    return '✅ *Demo finalizada*\n\n¿Qué tal la experiencia? 😊\n\nSi te gustó, el siguiente paso es dejar uno igual en tu WhatsApp (con tus horarios, precios y tono).\n\n¿Prefieres una llamada rápida de 10 min o te paso los pasos por aquí?'; 
-  }
-
-  const palabrasEmergencia = ['urgente', 'emergencia', 'problema grave', 'queja seria'];
-  const esEmergencia = palabrasEmergencia.some(p => msgLower.includes(p));
-  
-  if (esEmergencia) {
-    await notificarDueno(`🚨 *ALERTA DE EMERGENCIA*\n\nUsuario: ${chatId}\nMensaje: "${userMessage}"\n\n⚠️ Requiere atención inmediata.`, chatId);
-  }
-
-  let systemPrompt = '';
-  
-  if (state.mode === 'demo') {
-    const hoy = now(); 
-    const diaSemanaTxt = hoy.setLocale('es').toFormat('EEEE'); 
-    const fechaISO = hoy.toFormat('yyyy-MM-dd');
-    
-    const duracionDefault = 40;
-    const slotsDisponiblesHoyTxt = await generarTextoSlotsDisponiblesHoy(fechaISO, duracionDefault);
-    
-    const horario = BARBERIA_CONFIG?.horario || {}; 
-    const nombreBarberia = BARBERIA_CONFIG?.negocio?.nombre || 'Barbería';
-    const direccion = BARBERIA_CONFIG?.negocio?.direccion || ''; 
-    const telefono = BARBERIA_CONFIG?.negocio?.telefono || '';
-    
-    const serviciosTxt = generarTextoServicios(); 
-    const faqsTxt = generarTextoFAQs(); 
-    const pagosTxt = (BARBERIA_CONFIG?.pagos || []).join(', ');
-    const upsell = BARBERIA_CONFIG?.upsell || ''; 
-    
-    const horarioLv = horario.lun_vie || ''; 
-    const horarioS = horario.sab || ''; 
-    const horarioD = horario.dom || '';
-    
-    const horarioHoy = (
-      diaSemanaTxt.toLowerCase().startsWith('sá') ? horarioS : 
-      diaSemanaTxt.toLowerCase().startsWith('do') ? horarioD : 
-      horarioLv
-    ) || 'Cerrado';
-    
-    const plantilla = (BARBERIA_CONFIG?.system_prompt || '').trim();
-    const horaActual = hoy.toFormat('h:mm a');
-    
-    // 🔥 NUEVO: Obtener citas del usuario para poder cancelarlas
-    const bookings = await readBookings();
-    const citasUsuario = bookings.filter(b => 
-      b.chatId === chatId && 
-      b.status !== 'cancelled'
-    );
-    
-    let citasUsuarioTxt = '';
-    if (citasUsuario.length > 0) {
-      citasUsuarioTxt = '\n\n**📋 TUS CITAS ACTUALES:**\n';
-      citasUsuario.forEach((cita, i) => {
-        citasUsuarioTxt += `${i+1}. ${cita.nombreCliente} - ${cita.servicio} - ${cita.fecha} a las ${cita.hora_inicio}\n`;
-      });
-      citasUsuarioTxt += '\n*Si el cliente quiere cancelar, usa estos datos EXACTOS en el tag <CANCELLED:...>*\n';
-    }
-    
-    const fallback = `🚨🚨🚨 CONTEXTO TEMPORAL 🚨🚨🚨
-📅 HOY ES: ${diaSemanaTxt}, ${fechaISO}
-🕐 HORA ACTUAL: ${hoy.toFormat('HH:mm')} (formato 24h) = ${hoy.toFormat('h:mm a')}
-
-⚠️ REGLAS DE HORARIO:
-- Si son más de las 8 PM (20:00), NO ofrezcas citas para "hoy"
-- Solo ofrece horarios FUTUROS que no hayan pasado
-- Si un horario ya pasó HOY, NO lo ofrezcas
-
-Eres el "Asistente Cortex Barbershop" de **${nombreBarberia}**. Tono humano paisa, amable, eficiente. HOY=${fechaISO}. HORA ACTUAL=${horaActual}.
-${citasUsuarioTxt}
-
-**🚨 REGLAS OBLIGATORIAS PARA AGENDAR:**
-1. Pregunta qué servicio necesita
-2. Da precio y duración del servicio
-3. Ofrece SOLO horarios FUTUROS (si son más de las 8 PM, NO ofrezcas para "hoy")
-4. Si confirman hora, EXTRAE EL NOMBRE si ya lo dijeron
-5. Si no te han dado nombre, pide nombre completo
-6. 🚨🚨🚨 CUANDO CONFIRMES LA CITA, DEBES EMITIR EL TAG EN LA MISMA RESPUESTA:
-   
-   🔥 CRÍTICO: USA **COMILLAS DOBLES** ("), NUNCA COMILLAS SIMPLES (')
-   
-   Ejemplo CORRECTO:
-   "Listo, José! Te agendé corte mañana 24 de octubre a las 10:30 AM. <BOOKING:{\\"nombreCliente\\":\\"José\\",\\"servicio\\":\\"corte clásico\\",\\"fecha\\":\\"2025-10-24\\",\\"hora_inicio\\":\\"10:30\\"}>"
-   
-   Ejemplo INCORRECTO (¡NO HAGAS ESTO!):
-   <BOOKING:{'nombreCliente':'José',...}> ❌ ESTO FALLARÁ
-   
-   🚨 SIN EL TAG, LA CITA NO SE GUARDA. ES OBLIGATORIO INCLUIRLO.
-   🚨 USA COMILLAS DOBLES (") EN TODO EL JSON, NO COMILLAS SIMPLES (')
-
-**🚨 REGLAS CRÍTICAS PARA CANCELAR - DEBES SEGUIRLAS SIEMPRE:**
-1. Si el cliente pide cancelar, pregunta: "¿Me confirmas que quieres cancelar la cita de [fecha] a las [hora]?"
-2. Cuando el cliente confirme (dice "sí", "confirmo", "dale", etc.), INMEDIATAMENTE emite el tag:
-   <CANCELLED:{\\"nombreCliente\\":\\"(nombre EXACTO de la cita)\\",\\"fecha\\":\\"YYYY-MM-DD\\",\\"hora_inicio\\":\\"HH:MM\\"}>
-3. **CRÍTICO:** Debes emitir el tag <CANCELLED:...> EN LA MISMA RESPUESTA donde confirmas la cancelación
-4. **FORMATO OBLIGATORIO:** fecha="YYYY-MM-DD" y hora_inicio="HH:MM" en formato 24h
-5. Usa el nombre EXACTO que está en la cita (no cambies mayúsculas/minúsculas)
-6. 🔥 USA COMILLAS DOBLES ("), NO SIMPLES (')
-
-**EJEMPLO CORRECTO DE CANCELACIÓN:**
-User: "quiero cancelar mi cita"
-Bot: "Claro, ¿me confirmas que quieres cancelar la cita del 2025-10-24 a las 11:00 AM?"
-User: "sí"
-Bot: "Listo, tu cita ha sido cancelada. <CANCELLED:{\\"nombreCliente\\":\\"Zapata el duende\\",\\"fecha\\":\\"2025-10-24\\",\\"hora_inicio\\":\\"11:00\\"}>"
-
-**⏰ HORARIOS DISPONIBLES HOY:**
-${slotsDisponiblesHoyTxt}
-
----
-**Info:**
-Horario de hoy: ${horarioHoy}
-**Servicios:**
-${serviciosTxt}
-**Dirección:** ${direccion}
-**Pagos:** ${pagosTxt}
-**FAQs:**
-${faqsTxt}
-**Upsell:** ${upsell}`;
-    
-    systemPrompt = (plantilla || fallback)
-      .replace(/{hoy}/g, fechaISO)
-      .replace(/{horaActual}/g, horaActual)
-      .replace(/{diaSemana}/g, diaSemanaTxt)
-      .replace(/{nombreBarberia}/g, nombreBarberia)
-      .replace(/{direccionBarberia}/g, direccion)
-      .replace(/{telefonoBarberia}/g, telefono)
-      .replace(/{horarioLv}/g, horarioLv)
-      .replace(/{horarioS}/g, horarioS)
-      .replace(/{horarioD}/g, horarioD)
-      .replace(/{horarioHoy}/g, horarioHoy)
-      .replace(/{serviciosTxt}/g, serviciosTxt)
-      .replace(/{faqsBarberia}/g, faqsTxt)
-      .replace(/{pagosBarberia}/g, pagosTxt)
-      .replace(/{upsellText}/g, upsell)
-      .replace(/{slotsDisponiblesHoy}/g, slotsDisponiblesHoyTxt)
-      .replace(/{horasOcupadasHoy}/g, '');
-      
-  } else {
-    systemPrompt = (VENTAS_PROMPT || '').trim() || 
-      'Eres Cortex IA (ventas). Tono humano, corto. Guía a /start test o llamada.';
-  }
-
-  state.conversationHistory.push({ role: 'user', content: userMessage });
-  
-  if (state.conversationHistory.length > 20) {
-    state.conversationHistory = state.conversationHistory.slice(-20);
-  }
-
-  try {
-    const completion = await openai.chat.completions.create({ 
-      model: 'gpt-4o-mini', 
-      messages: [
-        { role: 'system', content: systemPrompt }, 
-        ...state.conversationHistory
-      ], 
-      temperature: state.mode === 'demo' ? 0.4 : 0.6, 
-      max_tokens: 500 
-    });
-    
-    let respuesta = (completion.choices?.[0]?.message?.content || '').trim() || 
-      '¿Te ayudo con algo más?';
-    
-    if (state.mode === 'demo') {
-      respuesta = await procesarTags(respuesta, chatId);
-      
-      // 🔥 NUEVO: Detectar y crear cita automáticamente si OpenAI no generó el tag
-      await detectarYCrearCitaAutomatica(state.conversationHistory, respuesta, chatId);
-    }
-    
-    const frasesNoSabe = [
-      'no estoy seguro', 
-      'no tengo esa información', 
-      'no puedo ayudarte', 
-      'necesito confirmarlo', 
-      'no sé'
-    ];
-    
-    const noSabe = frasesNoSabe.some(f => respuesta.toLowerCase().includes(f));
-    
-    if (noSabe) {
-      await notificarDueno(
-        `❓ *BOT NO SABE RESPONDER*\n\nUsuario: ${chatId}\nPregunta: "${userMessage}"\nRespuesta: "${respuesta}"\n\n💡 Revisa el chat.`,
-        chatId
-      );
-    }
-    
-    state.conversationHistory.push({ role: 'assistant', content: respuesta });
-    
-    return respuesta;
-    
-  } catch (e) {
-    console.error('OpenAI error:', e.message);
-    await notificarDueno(
-      `❌ *ERROR OPENAI*\nUsuario: ${chatId}\nMsg: "${userMessage}"\n${e.message}`,
-      chatId
-    );
-    return 'Uy, se me enredó algo aquí. ¿Me repites porfa? 🙏';
-  }
-}
 
 // ========== WHATSAPP EVENTS ==========
 client.on('qr', (qr) => {
   console.log('📱 Código QR generado!');
   console.log('🌐 Abre este link para escanear:');
-  console.log(`\n   👉 https://ai-10-production.up.railway.app/qr\n`);
+  console.log(`\n   👉 http://localhost:${PORT}/qr\n`);
   latestQR = qr;
   qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', async () => {
   console.log('✅ Cliente de WhatsApp listo!');
-  console.log(`👤 Notificaciones se envían a: ${OWNER_NUMBER}`);
+  console.log(`💤 Notificaciones al dueño: ${OWNER_NUMBER}`);
   latestQR = null;
   
   await initDataFiles();
   await cargarConfigBarberia();
-  await cargarVentasPrompt();
   
-  console.log('📝 Estado de archivos:');
-  console.log(`  - Barbería config: ${BARBERIA_CONFIG ? '✅' : '❌'}`);
-  console.log(`  - Ventas prompt: ${VENTAS_PROMPT ? '✅' : '❌'}`);
-  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length} encontrados`);
+  console.log('📋 Estado del sistema:');
+  console.log(`  - Barbería: ${BARBERIA_CONFIG?.negocio?.nombre || '❌'}`);
+  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}`);
+  console.log(`  - Barberos: ${Object.keys(BARBEROS).length}`);
+  console.log(`  - Citas activas: ${CITAS.filter(c => c.estado !== 'cancelada').length}`);
 });
 
 client.on('message', async (message) => {
@@ -2100,70 +1278,15 @@ client.on('message', async (message) => {
     
     const userId = message.from;
     const userMessage = (message.body || '').trim();
-    const state = getUserState(userId);
-
-    let processedMessage = userMessage;
     
-    if (message.hasMedia && 
-        (message.type === 'audio' || 
-         message.type === 'ptt' || 
-         (message.mimetype && message.mimetype.startsWith('audio/')))) {
-      try {
-        const transcript = await transcribeVoiceFromMsg(message);
-        if (transcript) {
-          processedMessage = transcript;
-          console.log(`🎤 Audio transcrito [${userId}]: "${processedMessage}"`);
-        } else {
-          await humanDelay(); // 🛡️ Anti-ban
-          await message.reply('No alcancé a entender el audio. ¿Puedes repetirlo?');
-          return;
-        }
-      } catch (e) {
-        console.error('[Handler Voz] Error:', e);
-        await humanDelay(); // 🛡️ Anti-ban
-        await message.reply('Tuve un problema leyendo el audio. ¿Me lo reenvías porfa?');
-        return;
-      }
-    }
+    if (!userMessage) return;
     
-    if (!processedMessage && !userMessage.startsWith('/')) return;
+    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
     
-    console.log(`📩 Mensaje de ${userId}: ${processedMessage || userMessage}`);
-    
-    const comandosEspeciales = [
-      '/bot on', 
-      '/bot off', 
-      '/show bookings', 
-      '/send later', 
-      '/start test', 
-      '/end test', 
-      '/ayuda', 
-      '/help',
-      '/config',
-      '/set owner'
-    ];
-    const esComandoEspecial = comandosEspeciales.some(cmd => 
-      (processedMessage || userMessage).toLowerCase().includes(cmd)
-    );
-    
-    if (!state.botEnabled && !esComandoEspecial) {
-      return;
-    }
-
-    // 🔥 NUEVO: Intentar manejar cancelación directamente (sin OpenAI)
-    const respuestaCancelacion = await manejarCancelacionDirecta(processedMessage || userMessage, userId);
-    
-    if (respuestaCancelacion) {
-      // Se detectó y manejó una cancelación
-      await humanDelay(); // 🛡️ Anti-ban
-      await message.reply(respuestaCancelacion);
-      return; // No pasar a OpenAI
-    }
-
-    const respuesta = await chatWithAI(processedMessage || userMessage, userId, message.from);
+    const respuesta = await chatWithAI(userMessage, userId, message.from);
     
     if (respuesta) {
-      await humanDelay(); // 🛡️ Anti-ban
+      await humanDelay();
       await message.reply(respuesta);
     }
     
@@ -2191,19 +1314,10 @@ client.on('auth_failure', (msg) => {
 });
 
 // ========== START ==========
-console.log('🚀 Iniciando Cortex AI Bot...');
-// 🔥 DEBUG: Verificar timezone al iniciar
-const ahora = now();
-console.log('🕐 TIMEZONE DEBUG:', {
-  timezone: TIMEZONE,
-  fecha: ahora.toFormat('yyyy-MM-dd'),
-  hora: ahora.toFormat('HH:mm'),
-  diaSemana: ahora.toFormat('cccc'),
-  fechaCompleta: ahora.toString()
-});
-
-console.log(`📍 Timezone: ${TIMEZONE}`);
-console.log(`👤 Owner: ${OWNER_NUMBER}`);
+console.log('🚀 Iniciando Cortex Barbershop Bot...');
+console.log('🕐 Timezone:', TIMEZONE);
+console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
+console.log(`👤 Dueño: ${OWNER_NUMBER}`);
 client.initialize();
 
 // ========== GLOBAL ERRORS ==========

@@ -1,0 +1,38 @@
+{
+  "Kevin": {
+    "telefono": "573001112222@c.us",
+    "horario": {
+      "lun_vie": "9:00 AM - 8:00 PM",
+      "sab": "9:00 AM - 6:00 PM",
+      "dom": "Cerrado"
+    },
+    "especialidades": ["corte", "barba", "degradado", "diseño"],
+    "estado": "disponible",
+    "bloques": [],
+    "descripcion": "Especialista en cortes modernos y degradados"
+  },
+  "Julián": {
+    "telefono": "573003334444@c.us",
+    "horario": {
+      "lun_vie": "9:00 AM - 8:00 PM",
+      "sab": "9:00 AM - 6:00 PM",
+      "dom": "10:00 AM - 4:00 PM"
+    },
+    "especialidades": ["corte", "barba", "afeitado tradicional"],
+    "estado": "disponible",
+    "bloques": [],
+    "descripcion": "Experto en afeitado clásico con navaja"
+  },
+  "Andrés": {
+    "telefono": "573005556666@c.us",
+    "horario": {
+      "lun_vie": "10:00 AM - 7:00 PM",
+      "sab": "10:00 AM - 5:00 PM",
+      "dom": "Cerrado"
+    },
+    "especialidades": ["tintura", "uñas", "manicure"],
+    "estado": "disponible",
+    "bloques": [],
+    "descripcion": "Especialista en tintura y manicure masculino"
+  }
+}
