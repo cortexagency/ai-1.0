@@ -1,10 +1,11 @@
 // =========================
-// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA V2
+// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA V2.1
 // FIXES: 
 // - Verificación correcta de disponibilidad antes de crear cita
 // - Flujo de confirmación con barbero ANTES de confirmar al cliente
 // - Notificaciones correctas (barbero recibe confirmación, owner recibe alertas)
 // - El barbero puede sugerir otro horario
+// - FIX V2.1: ID oculto, cancelación completa, confirmación con Ani corregida
 // =========================
 require('dotenv').config();
 
@@ -566,7 +567,14 @@ async function cancelarCita(nombreCliente, fecha, hora_inicio) {
   }
   
   // ✅ NOTIFICAR AL OWNER sobre cancelación
-  await notificarDueno(`❌ *CITA CANCELADA*\n\n👤 Cliente: ${nombreCliente}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}`);
+  await notificarDueno(
+    `❌ *CITA CANCELADA*\n\n` +
+    `👤 Cliente: ${nombreCliente}\n` +
+    `💇 Servicio: ${cita.servicio}\n` +
+    `📆 Fecha: ${fecha}\n` +
+    `🕐 Hora: ${hora_inicio}\n` +
+    `👨‍🦲 Barbero: ${cita.barbero}`
+  );
   
   await procesarWaitlist(fecha);
   
@@ -923,7 +931,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   
   let contextoCliente = '';
   if (esClienteRecurrente(userId)) {
-    contextoCliente = `\n\n📝 CLIENTE RECURRENTE: ${cliente.nombre} (${cliente.totalCitas} citas anteriores)`;
+    contextoCliente = `\n\n🔍 CLIENTE RECURRENTE: ${cliente.nombre} (${cliente.totalCitas} citas anteriores)`;
     if (cliente.preferencias.servicio) {
       contextoCliente += `\nÚltimo servicio: ${cliente.preferencias.servicio}`;
     }
@@ -936,7 +944,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   const slotsTxt = slotsHoy.length > 0 ? slotsHoy.join(', ') : 'No hay horarios disponibles hoy';
   
   const serviciosTxt = Object.entries(BARBERIA_CONFIG.servicios)
-    .map(([nombre, data]) => `• ${nombre} - $${data.precio.toLocaleString()} (${data.min} min)`)
+    .map(([nombre, data]) => `• ${nombre} - ${data.precio.toLocaleString()} (${data.min} min)`)
     .join('\n');
   
   const barberosTxt = Object.entries(BARBEROS)
@@ -1060,12 +1068,13 @@ IMPORTANTE: Después de emitir el tag con barbero específico, el sistema autom�
 
 /**
  * FUNCIÓN CRÍTICA: Procesar tags de booking y cancelación
- * NUEVO FLUJO:
+ * NUEVO FLUJO V2.1:
  * 1. Se detecta <BOOKING:...>
- * 2. Si hay barbero específico: se le pregunta PRIMERO
+ * 2. Si hay barbero específico Y existe en BARBEROS Y tiene teléfono: se le pregunta PRIMERO
  * 3. El barbero puede responder: SI, NO, o sugerir otra hora
  * 4. Solo si el barbero dice SI, se crea la cita
  * 5. Se notifica al cliente con la confirmación
+ * 6. Si barbero = "Cualquiera" O no existe en BARBEROS O sin teléfono: crear directamente
  */
 async function procesarTags(respuesta, userId, nombreCliente) {
   const bookingMatch = respuesta.match(/<BOOKING:(.+?)>/);
@@ -1086,10 +1095,17 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       datos.telefono = userId;
       datos.nombreCliente = datos.nombreCliente || nombreCliente;
       
-      // ✅ NUEVO FLUJO: Si hay barbero específico, preguntar PRIMERO
-      if (datos.barbero && datos.barbero !== 'Cualquiera' && BARBEROS[datos.barbero]) {
+      // ✅ VERIFICACIÓN CRÍTICA V2.1: Solo usar flujo de confirmación si:
+      // 1. Hay un barbero específico (no "Cualquiera")
+      // 2. El barbero existe en BARBEROS
+      // 3. El barbero tiene teléfono configurado
+      const necesitaConfirmacion = datos.barbero && 
+                                   datos.barbero !== 'Cualquiera' && 
+                                   BARBEROS[datos.barbero] && 
+                                   BARBEROS[datos.barbero].telefono;
+      
+      if (necesitaConfirmacion) {
         console.log(`📞 Iniciando flujo de confirmación con barbero: ${datos.barbero}`);
-        console.log(`   Barbero encontrado en BARBEROS:`, BARBEROS[datos.barbero] ? 'SÍ ✅' : 'NO ❌');
         
         const citaId = `PEND-${Date.now()}`;
         
@@ -1107,7 +1123,7 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           const fechaDT = parseDate(datos.fecha);
           const fechaLegible = formatDate(fechaDT);
           
-          // Enviar solicitud al barbero
+          // Enviar solicitud al barbero (SIN ID visible)
           await sendWithTyping(barberoChat,
             `🔔 *SOLICITUD DE CITA*\n\n` +
             `👤 Cliente: ${datos.nombreCliente}\n` +
@@ -1118,8 +1134,7 @@ async function procesarTags(respuesta, userId, nombreCliente) {
             `Responde:\n` +
             `✅ *SI* para confirmar\n` +
             `❌ *NO* si no puedes\n` +
-            `⏰ O sugiere otra hora (ej: "3:00 PM mejor")\n\n` +
-            `ID: ${citaId}`
+            `⏰ O sugiere otra hora (ej: "3:00 PM mejor")`
           );
           
           // Marcar que este barbero está esperando respuesta
@@ -1160,10 +1175,12 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           }
         }
       } else {
-        // Sin barbero específico o barbero = "Cualquiera": crear directamente
+        // Sin barbero específico o barbero = "Cualquiera" o no existe o sin teléfono: crear directamente
         console.log(`📝 Creando cita sin confirmación previa (barbero: ${datos.barbero || 'Cualquiera'})`);
-        console.log(`   Razón: barbero="${datos.barbero}", esIgualCualquiera=${datos.barbero === 'Cualquiera'}, existeEnBARBEROS=${!!BARBEROS[datos.barbero]}`);
-        console.log(`   Barberos disponibles en sistema:`, Object.keys(BARBEROS));
+        if (!necesitaConfirmacion && datos.barbero && datos.barbero !== 'Cualquiera') {
+          console.log(`   ⚠️ Razón: Barbero "${datos.barbero}" no requiere confirmación (no existe o sin teléfono)`);
+        }
+        
         const resultado = await crearCita(datos);
         
         if (resultado.error) {
@@ -1223,6 +1240,7 @@ async function handleMensajeBarbero(message, nombreBarbero) {
   const barberoTelefono = message.from;
   const texto = message.body.trim();
   
+  console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombreBarbero}`);
   console.log(`📞 Mensaje de barbero ${nombreBarbero}: "${texto}"`);
   
   // Verificar si este barbero tiene una respuesta pendiente
@@ -1652,13 +1670,16 @@ console.log('🕐 Timezone:', TIMEZONE);
 console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
 console.log(`👤 Dueño: ${OWNER_NUMBER}`);
 console.log('');
-console.log('🔧 VERSIÓN V2 - CORRECCIONES APLICADAS:');
+console.log('🔧 VERSIÓN V2.1 - CORRECCIONES APLICADAS:');
 console.log('  ✅ Fix verificación de disponibilidad mejorada con logs');
 console.log('  ✅ Fix flujo de confirmación con barbero ANTES de crear cita');
 console.log('  ✅ Fix barbero puede sugerir otra hora');
 console.log('  ✅ Fix notificaciones correctas (barbero = confirmación, owner = alertas)');
 console.log('  ✅ Fix detección de conflictos de horarios');
 console.log('  ✅ Fix validación de horarios disponibles antes de emitir BOOKING tag');
+console.log('  ✅ FIX V2.1: ID oculto en solicitudes');
+console.log('  ✅ FIX V2.1: Cancelación con información completa');
+console.log('  ✅ FIX V2.1: Confirmación con Ani corregida (verificación de teléfono)');
 console.log('');
 client.initialize();
 
