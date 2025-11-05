@@ -141,13 +141,26 @@ async function initDataFiles() {
     }
   }
   
-  // ✅ NUEVO: Copiar barberos.json desde uploads si existe
+  // ✅ CRÍTICO: Siempre copiar barberos.json desde raíz si existe y tiene datos
   const uploadsBarbers = path.join(ROOT_DIR, 'barberos.json');
-  if (fssync.existsSync(uploadsBarbers) && !fssync.existsSync(BARBERS_FILE)) {
-    console.log('📋 Copiando barberos.json desde raíz...');
-    const barbersData = await fs.readFile(uploadsBarbers, 'utf-8');
-    await fs.writeFile(BARBERS_FILE, barbersData, 'utf-8');
-    console.log('✅ barberos.json copiado al directorio de datos');
+  if (fssync.existsSync(uploadsBarbers)) {
+    try {
+      const barbersData = await fs.readFile(uploadsBarbers, 'utf-8');
+      const barbersObj = JSON.parse(barbersData);
+      
+      // Solo copiar si tiene barberos definidos
+      if (Object.keys(barbersObj).length > 0) {
+        console.log('📋 Copiando barberos.json desde raíz al directorio de datos...');
+        await fs.writeFile(BARBERS_FILE, barbersData, 'utf-8');
+        console.log(`✅ ${Object.keys(barbersObj).length} barberos copiados: ${Object.keys(barbersObj).join(', ')}`);
+      } else {
+        console.log('⚠️  barberos.json en raíz está vacío, no se copia');
+      }
+    } catch (e) {
+      console.error('❌ Error copiando barberos.json:', e.message);
+    }
+  } else {
+    console.log('⚠️  No se encontró barberos.json en la raíz del proyecto');
   }
   
   await cargarDatos();
@@ -1076,6 +1089,7 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       // ✅ NUEVO FLUJO: Si hay barbero específico, preguntar PRIMERO
       if (datos.barbero && datos.barbero !== 'Cualquiera' && BARBEROS[datos.barbero]) {
         console.log(`📞 Iniciando flujo de confirmación con barbero: ${datos.barbero}`);
+        console.log(`   Barbero encontrado en BARBEROS:`, BARBEROS[datos.barbero] ? 'SÍ ✅' : 'NO ❌');
         
         const citaId = `PEND-${Date.now()}`;
         
@@ -1148,6 +1162,8 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       } else {
         // Sin barbero específico o barbero = "Cualquiera": crear directamente
         console.log(`📝 Creando cita sin confirmación previa (barbero: ${datos.barbero || 'Cualquiera'})`);
+        console.log(`   Razón: barbero="${datos.barbero}", esIgualCualquiera=${datos.barbero === 'Cualquiera'}, existeEnBARBEROS=${!!BARBEROS[datos.barbero]}`);
+        console.log(`   Barberos disponibles en sistema:`, Object.keys(BARBEROS));
         const resultado = await crearCita(datos);
         
         if (resultado.error) {
