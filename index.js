@@ -141,6 +141,15 @@ async function initDataFiles() {
     }
   }
   
+  // ✅ NUEVO: Copiar barberos.json desde uploads si existe
+  const uploadsBarbers = path.join(ROOT_DIR, 'barberos.json');
+  if (fssync.existsSync(uploadsBarbers) && !fssync.existsSync(BARBERS_FILE)) {
+    console.log('📋 Copiando barberos.json desde raíz...');
+    const barbersData = await fs.readFile(uploadsBarbers, 'utf-8');
+    await fs.writeFile(BARBERS_FILE, barbersData, 'utf-8');
+    console.log('✅ barberos.json copiado al directorio de datos');
+  }
+  
   await cargarDatos();
 }
 
@@ -978,12 +987,22 @@ REGLAS OBLIGATORIAS:
 3. Fecha siempre: YYYY-MM-DD
 4. Hora siempre en 24h: HH:MM (ej: 09:00, 14:30, 16:00)
 5. Nombre EXACTO del servicio como aparece en la lista
-6. Si no hay barbero específico: "Cualquiera"
+6. BARBERO: MUY IMPORTANTE
+   - Si el cliente menciona un barbero específico (ej: "con Liliana", "que me atienda Kevin"), usa ESE nombre EXACTO
+   - Si NO menciona ningún barbero, usa "Cualquiera"
+   - Nombres válidos: ${Object.keys(BARBEROS).join(', ')}
 
 🚨 CRÍTICO: SIEMPRE VERIFICA QUE LA HORA ESTÉ EN LA LISTA DE HORARIOS DISPONIBLES ANTES DE EMITIR EL TAG.
 Si el cliente pide una hora que NO está en {slotsDisponiblesHoy}, NO emitas el tag y ofrece las horas disponibles.
 
-IMPORTANTE: Después de emitir el tag, el sistema automáticamente contacta al barbero para confirmar. NO menciones esto al cliente.
+🚨 DETECCIÓN DE BARBERO ESPECÍFICO:
+- "con Liliana" / "Liliana" → barbero: "Liliana"
+- "con Kevin" / "Kevin" → barbero: "Kevin"  
+- "con Julián" / "Julián" → barbero: "Julián"
+- "con Andrés" / "Andrés" → barbero: "Andrés"
+- "me da igual" / no menciona → barbero: "Cualquiera"
+
+IMPORTANTE: Después de emitir el tag con barbero específico, el sistema automáticamente contacta al barbero para confirmar disponibilidad. NO menciones esto al cliente hasta que haya confirmación.
 `;
   
   systemPrompt += jsonInstructions;
