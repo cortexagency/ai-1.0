@@ -1,11 +1,9 @@
 // =========================
-// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA V2.1
-// FIXES: 
-// - Verificación correcta de disponibilidad antes de crear cita
-// - Flujo de confirmación con barbero ANTES de confirmar al cliente
-// - Notificaciones correctas (barbero recibe confirmación, owner recibe alertas)
-// - El barbero puede sugerir otro horario
-// - FIX V2.1: ID oculto, cancelación completa, confirmación con Ani corregida
+// CORTEX IA - BARBERSHOP BOT - VERSIÓN CORREGIDA V2.3
+// FIXES V2.3:
+// - Fix /pausar todo ahora funciona correctamente con confirmación
+// - Fix /agendar con sintaxis completa y correcta
+// - Fix /citas filtra correctamente por fecha
 // =========================
 require('dotenv').config();
 
@@ -63,631 +61,6 @@ async function sendWithTyping(chat, message) {
     await chat.sendMessage(message);
     await chat.clearState();
   } catch (error) {
-    console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
-    await humanDelay();
-    await chat.sendMessage(message);
-  }
-}
-
-// ========== WHATSAPP CLIENT ==========
-const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
-
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
-  puppeteer: {
-    headless: true,
-    executablePath: WWEBJS_EXECUTABLE,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-zygote'
-    ]
-  },
-  qrMaxRetries: 3,
-  qrTimeout: 0,
-  authTimeout: 0,
-});
-
-// ========== ESTADO GLOBAL ==========
-let BARBERIA_CONFIG = null;
-let BARBEROS = {};
-let CITAS = [];
-let WAITLIST = [];
-let CLIENTES = {};
-const userStates = new Map();
-let BOT_PAUSED_GLOBAL = false;
-let BOT_PAUSED_CHATS = new Set();
-
-// Nuevo: Gestión de confirmaciones pendientes
-const citasPendientesConfirmacion = new Map(); // { citaId: { datos, clienteChatId, barbero, timestamp, timeout } }
-const respuestasBarberosPendientes = new Map(); // { barberoId: { citaId, tipo } } para saber qué espera el barbero
-
-// ========== FUNCIONES AUXILIARES ==========
-function now() {
-  return DateTime.now().setZone(TIMEZONE);
-}
-
-function parseDate(dateStr) {
-  return DateTime.fromISO(dateStr, { zone: TIMEZONE });
-}
-
-function formatTime(dt) {
-  return dt.toFormat('h:mm a');
-}
-
-function formatDate(dt) {
-  return dt.toFormat('EEEE d \'de\' MMMM', { locale: 'es' });
-}
-
-// ========== INICIALIZACIÓN DE ARCHIVOS ==========
-async function initDataFiles() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.mkdir(path.join(DATA_DIR, 'session'), { recursive: true });
-  
-  const files = {
-    [BOOKINGS_FILE]: [],
-    [WAITLIST_FILE]: [],
-    [BARBERS_FILE]: {},
-    [CLIENTS_FILE]: {},
-    [SCHEDULED_MESSAGES_FILE]: []
-  };
-  
-  for (const [file, defaultContent] of Object.entries(files)) {
-    if (!fssync.existsSync(file)) {
-      await fs.writeFile(file, JSON.stringify(defaultContent, null, 2), 'utf-8');
-      console.log(`✅ Creado: ${path.basename(file)}`);
-    }
-  }
-  
-  // ✅ CRÍTICO: Siempre copiar barberos.json desde raíz si existe y tiene datos
-  const uploadsBarbers = path.join(ROOT_DIR, 'barberos.json');
-  if (fssync.existsSync(uploadsBarbers)) {
-    try {
-      const barbersData = await fs.readFile(uploadsBarbers, 'utf-8');
-      const barbersObj = JSON.parse(barbersData);
-      
-      // Solo copiar si tiene barberos definidos
-      if (Object.keys(barbersObj).length > 0) {
-        console.log('📋 Copiando barberos.json desde raíz al directorio de datos...');
-        await fs.writeFile(BARBERS_FILE, barbersData, 'utf-8');
-        console.log(`✅ ${Object.keys(barbersObj).length} barberos copiados: ${Object.keys(barbersObj).join(', ')}`);
-      } else {
-        console.log('⚠️  barberos.json en raíz está vacío, no se copia');
-      }
-    } catch (e) {
-      console.error('❌ Error copiando barberos.json:', e.message);
-    }
-  } else {
-    console.log('⚠️  No se encontró barberos.json en la raíz del proyecto');
-  }
-  
-  await cargarDatos();
-}
-
-async function cargarDatos() {
-  try {
-    CITAS = JSON.parse(await fs.readFile(BOOKINGS_FILE, 'utf-8'));
-    WAITLIST = JSON.parse(await fs.readFile(WAITLIST_FILE, 'utf-8'));
-    BARBEROS = JSON.parse(await fs.readFile(BARBERS_FILE, 'utf-8'));
-    CLIENTES = JSON.parse(await fs.readFile(CLIENTS_FILE, 'utf-8'));
-    console.log('✅ Datos cargados correctamente');
-    console.log(`   - Citas: ${CITAS.length}`);
-    console.log(`   - Barberos: ${Object.keys(BARBEROS).length}`);
-    console.log(`   - Clientes: ${Object.keys(CLIENTES).length}`);
-  } catch (error) {
-    console.error('❌ Error cargando datos:', error.message);
-  }
-}
-
-async function guardarCitas() {
-  await fs.writeFile(BOOKINGS_FILE, JSON.stringify(CITAS, null, 2), 'utf-8');
-}
-
-async function guardarWaitlist() {
-  await fs.writeFile(WAITLIST_FILE, JSON.stringify(WAITLIST, null, 2), 'utf-8');
-}
-
-async function guardarBarberos() {
-  await fs.writeFile(BARBERS_FILE, JSON.stringify(BARBEROS, null, 2), 'utf-8');
-}
-
-async function guardarClientes() {
-  await fs.writeFile(CLIENTS_FILE, JSON.stringify(CLIENTES, null, 2), 'utf-8');
-}
-
-async function cargarConfigBarberia() {
-  try {
-    const raw = await fs.readFile(BARBERIA_CONFIG_PATH, 'utf-8');
-    BARBERIA_CONFIG = JSON.parse(raw);
-    console.log(`✅ Config barbería cargada: ${BARBERIA_CONFIG.negocio.nombre}`);
-  } catch (error) {
-    console.error('❌ Error cargando config barbería:', error.message);
-    console.error('⚠️  Verifica que barberia_base.txt esté en la raíz del proyecto');
-  }
-}
-
-// ========== GESTIÓN DE CLIENTES ==========
-function getOrCreateClient(telefono, nombre = null) {
-  if (!CLIENTES[telefono]) {
-    CLIENTES[telefono] = {
-      nombre: nombre || 'Cliente',
-      telefono,
-      historial: [],
-      preferencias: {
-        barbero: null,
-        servicio: null
-      },
-      primeraVisita: now().toISO(),
-      ultimaVisita: now().toISO(),
-      totalCitas: 0,
-      totalCancelaciones: 0
-    };
-    guardarClientes();
-  } else if (nombre && CLIENTES[telefono].nombre === 'Cliente') {
-    CLIENTES[telefono].nombre = nombre;
-    guardarClientes();
-  }
-  return CLIENTES[telefono];
-}
-
-function esClienteRecurrente(telefono) {
-  const cliente = CLIENTES[telefono];
-  return cliente && cliente.totalCitas > 0;
-}
-
-function registrarAccionCliente(telefono, accion, detalles = {}) {
-  const cliente = getOrCreateClient(telefono);
-  cliente.historial.push({
-    fecha: now().toISO(),
-    accion,
-    ...detalles
-  });
-  cliente.ultimaVisita = now().toISO();
-  guardarClientes();
-}
-
-// ========== GESTIÓN DE BARBEROS ==========
-function obtenerBarberosDisponibles() {
-  return Object.entries(BARBEROS)
-    .filter(([nombre, data]) => data.estado !== 'cerrado')
-    .map(([nombre, data]) => ({
-      nombre,
-      estado: data.estado,
-      especialidades: data.especialidades || []
-    }));
-}
-
-function obtenerEstadoBarbero(nombreBarbero) {
-  const barbero = BARBEROS[nombreBarbero];
-  if (!barbero) return 'no_existe';
-  
-  const ahora = now();
-  const horaActual = ahora.hour * 60 + ahora.minute;
-  
-  if (barbero.estado === 'descanso') return 'descanso';
-  if (barbero.estado === 'cerrado') return 'cerrado';
-  
-  if (barbero.bloques && barbero.bloques.length > 0) {
-    for (const bloque of barbero.bloques) {
-      const [inicioH, inicioM] = bloque.inicio.split(':').map(Number);
-      const [finH, finM] = bloque.fin.split(':').map(Number);
-      const inicioMin = inicioH * 60 + inicioM;
-      const finMin = finH * 60 + finM;
-      
-      if (horaActual >= inicioMin && horaActual <= finMin) {
-        return 'bloqueado';
-      }
-    }
-  }
-  
-  const citaActual = CITAS.find(c => {
-    if (c.barbero !== nombreBarbero || c.estado === 'cancelada') return false;
-    const citaDT = parseDate(`${c.fecha}T${c.hora_inicio}`);
-    const diff = ahora.diff(citaDT, 'minutes').minutes;
-    return diff >= 0 && diff < (c.duracion || 30);
-  });
-  
-  if (citaActual) return 'en_cita';
-  
-  return 'disponible';
-}
-
-// ========== GESTIÓN DE CITAS ==========
-function obtenerCitasDelDia(fecha = null, barbero = null) {
-  const fechaBuscar = fecha || now().toFormat('yyyy-MM-dd');
-  return CITAS.filter(c => {
-    if (c.estado === 'cancelada') return false;
-    if (c.fecha !== fechaBuscar) return false;
-    if (barbero && c.barbero !== barbero) return false;
-    return true;
-  });
-}
-
-/**
- * FUNCIÓN CRÍTICA: Verificar si un horario está disponible
- * Esta función verifica CORRECTAMENTE que no haya solapamiento de citas
- */
-function verificarDisponibilidad(fecha, hora, duracion, barbero = null) {
-  const horaSolicitada = parseDate(`${fecha}T${hora}`);
-  const horaFin = horaSolicitada.plus({ minutes: duracion });
-  
-  console.log(`🔍 Verificando disponibilidad:`);
-  console.log(`   - Fecha: ${fecha}`);
-  console.log(`   - Hora solicitada: ${hora} (${horaSolicitada.toISO()})`);
-  console.log(`   - Duración: ${duracion} min`);
-  console.log(`   - Hora fin: ${horaFin.toFormat('HH:mm')}`);
-  console.log(`   - Barbero: ${barbero || 'Cualquiera'}`);
-  
-  const citasDelDia = obtenerCitasDelDia(fecha, barbero);
-  console.log(`   - Citas existentes: ${citasDelDia.length}`);
-  
-  for (const cita of citasDelDia) {
-    const citaInicio = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
-    const citaFin = citaInicio.plus({ minutes: cita.duracion || 30 });
-    
-    console.log(`   - Comparando con cita existente: ${cita.hora_inicio} - ${citaFin.toFormat('HH:mm')} (${cita.nombreCliente})`);
-    
-    // Verificar si hay solapamiento
-    // Hay conflicto SI: la hora solicitada es ANTES del fin de la cita existente
-    // Y la hora de fin solicitada es DESPUÉS del inicio de la cita existente
-    if (horaSolicitada < citaFin && horaFin > citaInicio) {
-      console.log(`   ❌ CONFLICTO DETECTADO con cita de ${cita.nombreCliente}`);
-      return false;
-    }
-  }
-  
-  console.log(`   ✅ Horario disponible`);
-  return true;
-}
-
-function obtenerHorarioDelDia(diaSemana) {
-  if (!BARBERIA_CONFIG) return null;
-  
-  const config = BARBERIA_CONFIG.horario;
-  
-  if (diaSemana >= 1 && diaSemana <= 5) {
-    const [inicio, fin] = config.lun_vie.split(' - ');
-    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
-  } else if (diaSemana === 6) {
-    const [inicio, fin] = config.sab.split(' - ');
-    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
-  } else {
-    if (config.dom.toLowerCase() === 'cerrado') {
-      return null;
-    }
-    const [inicio, fin] = config.dom.split(' - ');
-    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
-  }
-}
-
-function convertirA24h(hora12) {
-  const match = hora12.match(/(\d+):(\d+)\s*(AM|PM)/i);
-  if (!match) return hora12;
-  
-  let [, h, m, periodo] = match;
-  h = parseInt(h);
-  m = parseInt(m);
-  
-  if (periodo.toUpperCase() === 'PM' && h !== 12) h += 12;
-  if (periodo.toUpperCase() === 'AM' && h === 12) h = 0;
-  
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-function obtenerProximosSlots(fecha = null, cantidad = 3, servicio = null, barbero = null) {
-  const ahora = now();
-  const fechaBuscar = fecha || ahora.toFormat('yyyy-MM-dd');
-  const duracion = servicio && BARBERIA_CONFIG ? (BARBERIA_CONFIG.servicios[servicio]?.min || 30) : 30;
-  
-  let diaSemana;
-  if (fecha) {
-    const fechaDT = DateTime.fromFormat(fecha, 'yyyy-MM-dd', { zone: TIMEZONE });
-    diaSemana = fechaDT.weekday;
-  } else {
-    diaSemana = ahora.weekday;
-  }
-  
-  const horarioHoy = obtenerHorarioDelDia(diaSemana);
-  
-  if (!horarioHoy) {
-    console.log(`⚠️  No hay horario configurado para el día ${diaSemana}`);
-    return [];
-  }
-  
-  const [aperturaH, aperturaM] = horarioHoy.inicio.split(':').map(Number);
-  const [cierreH, cierreM] = horarioHoy.fin.split(':').map(Number);
-  
-  let fechaDT = fecha ? 
-    DateTime.fromFormat(fecha, 'yyyy-MM-dd', { zone: TIMEZONE }) : 
-    ahora;
-  
-  let horaActual = DateTime.fromObject({ 
-    year: fechaDT.year, 
-    month: fechaDT.month, 
-    day: fechaDT.day,
-    hour: aperturaH,
-    minute: aperturaM
-  }, { zone: TIMEZONE });
-  
-  const horaCierre = DateTime.fromObject({ 
-    year: fechaDT.year, 
-    month: fechaDT.month, 
-    day: fechaDT.day,
-    hour: cierreH,
-    minute: cierreM
-  }, { zone: TIMEZONE });
-  
-  // Si es HOY, solo mostrar horarios futuros
-  if (fechaBuscar === ahora.toFormat('yyyy-MM-dd')) {
-    const minutoActual = ahora.hour * 60 + ahora.minute;
-    const minutoApertura = aperturaH * 60 + aperturaM;
-    
-    if (minutoActual > minutoApertura) {
-      // Redondear al próximo slot de 30 minutos
-      horaActual = ahora.plus({ minutes: 30 });
-      if (horaActual.minute < 30) {
-        horaActual = horaActual.set({ minute: 30, second: 0 });
-      } else {
-        horaActual = horaActual.plus({ hours: 1 }).set({ minute: 0, second: 0 });
-      }
-    }
-  }
-  
-  const slots = [];
-  
-  while (horaActual < horaCierre && slots.length < cantidad) {
-    const hora = horaActual.toFormat('HH:mm');
-    const horaNum = horaActual.hour;
-    
-    // Respetar hora de almuerzo
-    if (BARBERIA_CONFIG && BARBERIA_CONFIG.horario.almuerzo && 
-        horaNum >= BARBERIA_CONFIG.horario.almuerzo.start && 
-        horaNum < BARBERIA_CONFIG.horario.almuerzo.end) {
-      horaActual = horaActual.plus({ minutes: 30 });
-      continue;
-    }
-    
-    if (verificarDisponibilidad(fechaBuscar, hora, duracion, barbero)) {
-      slots.push(formatTime(horaActual));
-    }
-    
-    horaActual = horaActual.plus({ minutes: 30 });
-  }
-  
-  return slots;
-}
-
-async function crearCita(datos) {
-  const { nombreCliente, servicio, fecha, hora_inicio, barbero, telefono } = datos;
-  
-  if (!BARBERIA_CONFIG) {
-    return { error: 'Error de configuración del sistema' };
-  }
-  
-  const duracion = BARBERIA_CONFIG.servicios[servicio]?.min || 30;
-  
-  // VERIFICACIÓN CRÍTICA: Verificar disponibilidad JUSTO ANTES de crear
-  console.log(`🔍 Verificación final antes de crear cita:`);
-  const disponible = verificarDisponibilidad(fecha, hora_inicio, duracion, barbero);
-  
-  if (!disponible) {
-    console.log(`❌ Horario NO disponible al intentar crear la cita`);
-    return { error: 'Ese horario ya no está disponible' };
-  }
-  
-  const cita = {
-    id: `CITA-${Date.now()}`,
-    nombreCliente,
-    telefono,
-    servicio,
-    fecha,
-    hora_inicio,
-    duracion,
-    barbero: barbero || 'Cualquiera',
-    estado: 'confirmada',
-    createdAt: now().toISO(),
-    notificaciones: {
-      recordatorio: false,
-      review: false
-    }
-  };
-  
-  CITAS.push(cita);
-  await guardarCitas();
-  
-  console.log(`✅ Cita creada exitosamente: ${cita.id}`);
-  
-  const cliente = getOrCreateClient(telefono, nombreCliente);
-  cliente.totalCitas++;
-  if (barbero) cliente.preferencias.barbero = barbero;
-  cliente.preferencias.servicio = servicio;
-  registrarAccionCliente(telefono, 'cita_creada', { citaId: cita.id, servicio, fecha, hora_inicio });
-  
-  await programarRecordatorio(cita);
-  
-  // ✅ NOTIFICAR AL BARBERO sobre la cita confirmada
-  if (barbero && barbero !== 'Cualquiera' && BARBEROS[barbero]) {
-    const fechaDT = parseDate(fecha);
-    const fechaLegible = formatDate(fechaDT);
-    
-    await notificarBarbero(barbero, 
-      `✅ *CITA CONFIRMADA*\n\n` +
-      `👤 Cliente: ${nombreCliente}\n` +
-      `💇 Servicio: ${servicio}\n` +
-      `📅 Fecha: ${fechaLegible}\n` +
-      `🕐 Hora: ${hora_inicio}\n` +
-      `⏱️ Duración: ${duracion} min`
-    );
-  }
-  
-  // ✅ NOTIFICAR AL OWNER sobre nueva cita
-  await notificarDueno(`📅 *NUEVA CITA*\n\n👤 Cliente: ${nombreCliente}\n💇 Servicio: ${servicio}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}\n👨‍🦲 Barbero: ${barbero || 'Cualquiera'}`);
-  
-  return { success: true, cita };
-}
-
-async function cancelarCita(nombreCliente, fecha, hora_inicio) {
-  const cita = CITAS.find(c => 
-    c.nombreCliente.toLowerCase() === nombreCliente.toLowerCase() &&
-    c.fecha === fecha &&
-    c.hora_inicio === hora_inicio &&
-    c.estado !== 'cancelada'
-  );
-  
-  if (!cita) {
-    return { error: 'No encontré esa cita' };
-  }
-  
-  cita.estado = 'cancelada';
-  cita.canceladaAt = now().toISO();
-  await guardarCitas();
-  
-  if (cita.telefono) {
-    const cliente = CLIENTES[cita.telefono];
-    if (cliente) {
-      cliente.totalCancelaciones++;
-      registrarAccionCliente(cita.telefono, 'cita_cancelada', { citaId: cita.id });
-    }
-  }
-  
-  // ✅ NOTIFICAR AL BARBERO sobre cancelación
-  if (cita.barbero && cita.barbero !== 'Cualquiera' && BARBEROS[cita.barbero]) {
-    const fechaDT = parseDate(cita.fecha);
-    const fechaLegible = formatDate(fechaDT);
-    
-    await notificarBarbero(cita.barbero, 
-      `❌ *CITA CANCELADA*\n\n` +
-      `👤 Cliente: ${nombreCliente}\n` +
-      `📅 Fecha: ${fechaLegible}\n` +
-      `🕐 Hora: ${hora_inicio}`
-    );
-  }
-  
-  // ✅ NOTIFICAR AL OWNER sobre cancelación
-  await notificarDueno(
-    `❌ *CITA CANCELADA*\n\n` +
-    `👤 Cliente: ${nombreCliente}\n` +
-    `💇 Servicio: ${cita.servicio}\n` +
-    `📆 Fecha: ${fecha}\n` +
-    `🕐 Hora: ${hora_inicio}\n` +
-    `👨‍🦲 Barbero: ${cita.barbero}`
-  );
-  
-  await procesarWaitlist(fecha);
-  
-  return { success: true, cita };
-}
-
-// ========== WAITLIST ==========
-async function agregarAWaitlist(telefono, nombreCliente, servicio, fecha) {
-  const entrada = {
-    id: `WAIT-${Date.now()}`,
-    telefono,
-    nombreCliente,
-    servicio,
-    fecha,
-    createdAt: now().toISO()
-  };
-  
-  WAITLIST.push(entrada);
-  await guardarWaitlist();
-  
-  registrarAccionCliente(telefono, 'waitlist_agregado', { servicio, fecha });
-  
-  return entrada;
-}
-
-async function procesarWaitlist(fecha) {
-  const enEspera = WAITLIST.filter(w => w.fecha === fecha);
-  
-  if (enEspera.length === 0) return;
-  
-  const slotsDisponibles = obtenerProximosSlots(fecha, 5);
-  
-  if (slotsDisponibles.length === 0) return;
-  
-  const primero = enEspera[0];
-  const horaDisponible = slotsDisponibles[0];
-  
-  try {
-    const chat = await client.getChatById(primero.telefono);
-    await sendWithTyping(chat, 
-      `¡Hola ${primero.nombreCliente}! 🎉\n\nSe liberó un espacio para *${primero.servicio}* hoy a las *${horaDisponible}*.\n\n¿Lo tomas? Responde *Sí* o *No*`
-    );
-    
-    setTimeout(() => {
-      const estaEnWaitlist = WAITLIST.find(w => w.id === primero.id);
-      if (estaEnWaitlist) {
-        WAITLIST = WAITLIST.filter(w => w.id !== primero.id);
-        guardarWaitlist();
-        procesarWaitlist(fecha);
-      }
-    }, 120000);
-    
-  } catch (error) {
-    console.error('Error notificando waitlist:', error.message);
-  }
-}
-
-// ========== RECORDATORIOS Y NOTIFICACIONES ==========
-async function programarRecordatorio(cita) {
-  const citaDT = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
-  const recordatorioTime = citaDT.minus({ hours: 1 });
-  
-  const ahora = now();
-  const diff = recordatorioTime.diff(ahora, 'milliseconds').milliseconds;
-  
-  if (diff > 0 && diff < 86400000) {
-    setTimeout(async () => {
-      try {
-        const chat = await client.getChatById(cita.telefono);
-        await sendWithTyping(chat, 
-          `🔔 *Recordatorio*\n\nHola ${cita.nombreCliente}! Te esperamos en 1 hora para tu *${cita.servicio}*.\n\n📍 ${BARBERIA_CONFIG.negocio.direccion}\n🕐 ${cita.hora_inicio}\n\n¡Nos vemos pronto! 😊`
-        );
-        
-        cita.notificaciones.recordatorio = true;
-        await guardarCitas();
-      } catch (error) {
-        console.error('Error enviando recordatorio:', error.message);
-      }
-    }, diff);
-  }
-  
-  const reviewTime = citaDT.plus({ days: 2 });
-  const reviewDiff = reviewTime.diff(ahora, 'milliseconds').milliseconds;
-  
-  if (reviewDiff > 0 && reviewDiff < 172800000) {
-    setTimeout(async () => {
-      try {
-        const chat = await client.getChatById(cita.telefono);
-        await sendWithTyping(chat, 
-          `¡Hola ${cita.nombreCliente}! 😊\n\nEsperamos que hayas quedado contento con tu ${cita.servicio}.\n\n¿Nos ayudas con una reseña? ⭐️\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias por preferirnos!`
-        );
-        
-        cita.notificaciones.review = true;
-        await guardarCitas();
-      } catch (error) {
-        console.error('Error enviando solicitud de review:', error.message);
-      }
-    }, reviewDiff);
-  }
-}
-
-async function notificarBarbero(nombreBarbero, mensaje) {
-  const barbero = BARBEROS[nombreBarbero];
-  if (!barbero || !barbero.telefono) {
-    console.error(`⚠️ No se pudo notificar a ${nombreBarbero}: sin teléfono configurado`);
-    return;
-  }
-  
-  try {
-    const chat = await client.getChatById(barbero.telefono);
-    await sendWithTyping(chat, mensaje);
-    console.log(`✅ Notificación enviada a barbero ${nombreBarbero}`);
-  } catch (error) {
     console.error(`❌ Error notificando a barbero ${nombreBarbero}:`, error.message);
   }
 }
@@ -725,9 +98,12 @@ async function handleCommand(command, args, userId) {
           `/barberos - Lista de barberos y estados\n` +
           `/disponibilidad [nombre] - Ver disponibilidad de un barbero\n\n` +
           `*Citas:*\n` +
-          `/citas general - Todas las citas de hoy\n` +
-          `/citas [nombre] - Citas de un barbero específico\n` +
-          `/agendar [nombre] [servicio] [hora] - Crear cita manual (walk-in)\n\n` +
+          `/citas - Ver todas las citas de hoy\n` +
+          `/citas [fecha] - Ver citas de una fecha específica (formato: YYYY-MM-DD)\n` +
+          `/citas [nombre] - Citas de un barbero específico hoy\n` +
+          `/agendar [nombre] [servicio] [fecha] [hora] con [barbero] - Crear cita manual\n` +
+          `  Ejemplo: /agendar Juan "corte clásico" 2025-11-06 7:30pm con mafe\n` +
+          `  Si es para hoy: /agendar Juan "corte clásico" hoy 7:30pm con mafe\n\n` +
           `*Configuración:*\n` +
           `/cerrar [hora inicial]-[hora final] - Bloquear horario\n` +
           `/abrir [hora inicial]-[hora final] - Liberar horario bloqueado`;
@@ -749,6 +125,8 @@ async function handleCommand(command, args, userId) {
     case '/pausar':
       if (!esOwner) return 'Solo el dueño puede pausar el bot.';
       if (args[0] === 'todo') {
+        // ✅ FIX: Guardar estado de espera de confirmación
+        esperandoConfirmacionPausa.set(userId, Date.now());
         return '⚠️ *¿Estás seguro?*\n\nEsto pausará el bot en *TODOS* los chats.\n\nResponde *Sí* para confirmar o *No* para cancelar.';
       } else {
         BOT_PAUSED_CHATS.add(userId);
@@ -786,11 +164,39 @@ async function handleCommand(command, args, userId) {
     
     case '/citas':
       const argCitas = args.join(' ').toLowerCase();
-      if (argCitas === 'general' && esOwner) {
-        const citasHoy = obtenerCitasDelDia();
+      
+      // ✅ FIX: Verificar si es una fecha en formato YYYY-MM-DD
+      const fechaMatch = args[0]?.match(/^\d{4}-\d{2}-\d{2}$/);
+      
+      if (fechaMatch) {
+        // Ver citas de una fecha específica
+        const fechaBuscar = args[0];
+        const citasFecha = obtenerCitasDelDia(fechaBuscar);
+        
+        if (citasFecha.length === 0) {
+          return `📅 No hay citas agendadas para ${fechaBuscar}.`;
+        }
+        
+        const fechaDT = DateTime.fromFormat(fechaBuscar, 'yyyy-MM-dd', { zone: TIMEZONE });
+        const fechaLegible = formatDate(fechaDT);
+        
+        let msg = `📅 *CITAS DEL ${fechaLegible.toUpperCase()}*\n\n`;
+        citasFecha.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+        for (const cita of citasFecha) {
+          msg += `🕐 ${cita.hora_inicio} - ${cita.nombreCliente}\n`;
+          msg += `   💇 ${cita.servicio}\n`;
+          msg += `   👨‍🦲 ${cita.barbero}\n\n`;
+        }
+        return msg;
+      } else if (argCitas === '' && esOwner) {
+        // ✅ FIX: Sin argumentos = citas de HOY solamente
+        const hoy = now().toFormat('yyyy-MM-dd');
+        const citasHoy = obtenerCitasDelDia(hoy);
+        
         if (citasHoy.length === 0) {
           return '📅 No hay citas agendadas para hoy.';
         }
+        
         let msg = `📅 *CITAS DE HOY (${now().toFormat('d/M/yyyy')})*\n\n`;
         citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
         for (const cita of citasHoy) {
@@ -800,11 +206,15 @@ async function handleCommand(command, args, userId) {
         }
         return msg;
       } else if (esBarbero) {
+        // Barbero viendo sus propias citas de hoy
         const nombreBarbero = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
-        const citasHoy = obtenerCitasDelDia(null, nombreBarbero);
+        const hoy = now().toFormat('yyyy-MM-dd');
+        const citasHoy = obtenerCitasDelDia(hoy, nombreBarbero);
+        
         if (citasHoy.length === 0) {
           return '📅 No tienes citas agendadas para hoy.';
         }
+        
         let msg = `📅 *TUS CITAS DE HOY*\n\n`;
         citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
         for (const cita of citasHoy) {
@@ -812,12 +222,16 @@ async function handleCommand(command, args, userId) {
           msg += `   💇 ${cita.servicio}\n\n`;
         }
         return msg;
-      } else if (esOwner && args.length > 0) {
+      } else if (esOwner && args.length > 0 && !fechaMatch) {
+        // Ver citas de un barbero específico HOY
         const nombreBarbero = args.join(' ');
-        const citasHoy = obtenerCitasDelDia(null, nombreBarbero);
+        const hoy = now().toFormat('yyyy-MM-dd');
+        const citasHoy = obtenerCitasDelDia(hoy, nombreBarbero);
+        
         if (citasHoy.length === 0) {
           return `📅 ${nombreBarbero} no tiene citas agendadas para hoy.`;
         }
+        
         let msg = `📅 *CITAS DE ${nombreBarbero.toUpperCase()} HOY*\n\n`;
         citasHoy.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
         for (const cita of citasHoy) {
@@ -826,28 +240,97 @@ async function handleCommand(command, args, userId) {
         }
         return msg;
       }
-      return 'Uso: /citas general o /citas [nombre barbero]';
+      return 'Uso: /citas [fecha YYYY-MM-DD] o /citas [nombre barbero]';
     
     case '/agendar':
       if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
-      if (args.length < 3) return 'Uso: /agendar [nombre] [servicio] [hora]\nEjemplo: /agendar Juan "corte clásico" 4:30pm';
       
-      const nombreCliente = args[0];
-      const servicio = args[1];
-      const horaStr = args[2];
+      // ✅ FIX: Nuevo parser mejorado para /agendar
+      // Formato esperado: /agendar [nombre] [servicio] [fecha] [hora] con [barbero]
+      // Ejemplo: /agendar Juan "corte clásico" 2025-11-06 7:30pm con mafe
+      // O para hoy: /agendar Juan "corte clásico" hoy 7:30pm con mafe
       
-      const hora24 = convertirA24h(horaStr);
-      const fechaHoy = now().toFormat('yyyy-MM-dd');
+      const fullText = args.join(' ');
       
+      // Detectar "con [barbero]" al final
       let barberoAsignado = 'Cualquiera';
-      if (esBarbero) {
+      let textoPrincipal = fullText;
+      
+      const conMatch = fullText.match(/\s+con\s+(\w+)$/i);
+      if (conMatch) {
+        const nombreBarberoInput = conMatch[1];
+        // Buscar barbero (case-insensitive)
+        const barberoEncontrado = Object.keys(BARBEROS).find(
+          b => b.toLowerCase() === nombreBarberoInput.toLowerCase()
+        );
+        
+        if (barberoEncontrado) {
+          barberoAsignado = barberoEncontrado;
+        }
+        
+        // Remover "con [barbero]" del texto
+        textoPrincipal = fullText.substring(0, conMatch.index).trim();
+      }
+      
+      // Si es barbero sin especificar barbero, asignar a sí mismo
+      if (esBarbero && barberoAsignado === 'Cualquiera') {
         barberoAsignado = Object.keys(BARBEROS).find(n => BARBEROS[n].telefono === userId);
       }
+      
+      // Parsear: [nombre] [servicio entre comillas] [fecha] [hora]
+      // Regex para capturar servicio entre comillas
+      const servicioMatch = textoPrincipal.match(/"([^"]+)"/);
+      
+      if (!servicioMatch) {
+        return `❌ *Error de formato*\n\nUso correcto:\n/agendar [nombre] "[servicio]" [fecha] [hora] con [barbero]\n\nEjemplo:\n/agendar Juan "corte clásico" 2025-11-06 7:30pm con mafe\n\nPara hoy:\n/agendar Juan "corte clásico" hoy 7:30pm con mafe`;
+      }
+      
+      const servicio = servicioMatch[1];
+      
+      // Remover el servicio del texto para obtener nombre, fecha y hora
+      const sinServicio = textoPrincipal.replace(servicioMatch[0], '').trim();
+      const partes = sinServicio.split(/\s+/);
+      
+      if (partes.length < 3) {
+        return `❌ *Faltan datos*\n\nUso: /agendar [nombre] "[servicio]" [fecha] [hora] con [barbero]\n\nEjemplo: /agendar Juan "corte clásico" 2025-11-06 7:30pm con mafe`;
+      }
+      
+      const nombreCliente = partes[0];
+      const fechaInput = partes[1];
+      const horaInput = partes[2];
+      
+      // Procesar fecha
+      let fechaFinal;
+      if (fechaInput.toLowerCase() === 'hoy') {
+        fechaFinal = now().toFormat('yyyy-MM-dd');
+      } else if (fechaInput.toLowerCase() === 'mañana' || fechaInput.toLowerCase() === 'manana') {
+        fechaFinal = now().plus({ days: 1 }).toFormat('yyyy-MM-dd');
+      } else if (fechaInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        fechaFinal = fechaInput;
+      } else {
+        return `❌ *Fecha inválida*\n\nUsa:\n- "hoy"\n- "mañana"\n- Formato YYYY-MM-DD (ej: 2025-11-06)`;
+      }
+      
+      // Convertir hora a 24h
+      const hora24 = convertirA24h(horaInput);
+      
+      // Verificar que el servicio existe
+      if (!BARBERIA_CONFIG.servicios[servicio]) {
+        const serviciosDisponibles = Object.keys(BARBERIA_CONFIG.servicios).join(', ');
+        return `❌ *Servicio no encontrado*\n\nServicios disponibles:\n${serviciosDisponibles}`;
+      }
+      
+      console.log(`📝 Creando cita manual:`);
+      console.log(`   - Cliente: ${nombreCliente}`);
+      console.log(`   - Servicio: ${servicio}`);
+      console.log(`   - Fecha: ${fechaFinal}`);
+      console.log(`   - Hora: ${hora24}`);
+      console.log(`   - Barbero: ${barberoAsignado}`);
       
       const resultado = await crearCita({
         nombreCliente,
         servicio,
-        fecha: fechaHoy,
+        fecha: fechaFinal,
         hora_inicio: hora24,
         barbero: barberoAsignado,
         telefono: `WALKIN-${Date.now()}@c.us`
@@ -857,7 +340,15 @@ async function handleCommand(command, args, userId) {
         return `❌ ${resultado.error}`;
       }
       
-      return `✅ Cita creada:\n*${nombreCliente}* - ${servicio}\n📆 Hoy a las ${horaStr}`;
+      const fechaDT = parseDate(fechaFinal);
+      const fechaLegible = formatDate(fechaDT);
+      
+      return `✅ *Cita creada*\n\n` +
+        `👤 ${nombreCliente}\n` +
+        `💇 ${servicio}\n` +
+        `📅 ${fechaLegible}\n` +
+        `🕐 ${hora24}\n` +
+        `👨‍🦲 ${barberoAsignado}`;
     
     case '/disponibilidad':
       if (esBarbero) {
@@ -915,6 +406,25 @@ async function chatWithAI(userMessage, userId, chatId) {
   
   state.idioma = detectarIdioma(userMessage);
   
+  // ✅ FIX: Verificar si está esperando confirmación de /pausar todo
+  if (esperandoConfirmacionPausa.has(chatId)) {
+    const textoUpper = userMessage.toUpperCase().trim();
+    
+    if (textoUpper === 'SI' || textoUpper === 'SÍ' || textoUpper === 'SÃ') {
+      esperandoConfirmacionPausa.delete(chatId);
+      BOT_PAUSED_GLOBAL = true;
+      BOT_PAUSED_CHATS.clear(); // Limpiar pausas individuales
+      console.log('⏸ Bot pausado globalmente');
+      return '⏸ *Bot pausado en todos los chats*\n\nUsa /iniciar todo para reactivarlo.';
+    } else if (textoUpper === 'NO') {
+      esperandoConfirmacionPausa.delete(chatId);
+      return '✅ Cancelado. El bot sigue activo.';
+    } else {
+      // Mantener el estado de espera
+      return '⚠️ Por favor responde *Sí* o *No*';
+    }
+  }
+  
   if (BOT_PAUSED_GLOBAL || BOT_PAUSED_CHATS.has(chatId)) {
     return null;
   }
@@ -931,7 +441,7 @@ async function chatWithAI(userMessage, userId, chatId) {
   
   let contextoCliente = '';
   if (esClienteRecurrente(userId)) {
-    contextoCliente = `\n\n🔍 CLIENTE RECURRENTE: ${cliente.nombre} (${cliente.totalCitas} citas anteriores)`;
+    contextoCliente = `\n\n📝 CLIENTE RECURRENTE: ${cliente.nombre} (${cliente.totalCitas} citas anteriores)`;
     if (cliente.preferencias.servicio) {
       contextoCliente += `\nÚltimo servicio: ${cliente.preferencias.servicio}`;
     }
@@ -1066,23 +576,12 @@ IMPORTANTE: Después de emitir el tag con barbero específico, el sistema autom�
   }
 }
 
-/**
- * FUNCIÓN CRÍTICA: Procesar tags de booking y cancelación
- * NUEVO FLUJO V2.1:
- * 1. Se detecta <BOOKING:...>
- * 2. Si hay barbero específico Y existe en BARBEROS Y tiene teléfono: se le pregunta PRIMERO
- * 3. El barbero puede responder: SI, NO, o sugerir otra hora
- * 4. Solo si el barbero dice SI, se crea la cita
- * 5. Se notifica al cliente con la confirmación
- * 6. Si barbero = "Cualquiera" O no existe en BARBEROS O sin teléfono: crear directamente
- */
 async function procesarTags(respuesta, userId, nombreCliente) {
   const bookingMatch = respuesta.match(/<BOOKING:(.+?)>/);
   if (bookingMatch) {
     try {
       let jsonStr = bookingMatch[1].trim();
       
-      // Limpieza agresiva del JSON
       jsonStr = jsonStr.replace(/\\\\/g, '');
       jsonStr = jsonStr.replace(/\\"/g, '"');
       jsonStr = jsonStr.replace(/\\'/g, "'");
@@ -1095,10 +594,6 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       datos.telefono = userId;
       datos.nombreCliente = datos.nombreCliente || nombreCliente;
       
-      // ✅ VERIFICACIÓN CRÍTICA V2.1: Solo usar flujo de confirmación si:
-      // 1. Hay un barbero específico (no "Cualquiera")
-      // 2. El barbero existe en BARBEROS
-      // 3. El barbero tiene teléfono configurado
       const necesitaConfirmacion = datos.barbero && 
                                    datos.barbero !== 'Cualquiera' && 
                                    BARBEROS[datos.barbero] && 
@@ -1109,7 +604,6 @@ async function procesarTags(respuesta, userId, nombreCliente) {
         
         const citaId = `PEND-${Date.now()}`;
         
-        // Guardar la solicitud pendiente
         citasPendientesConfirmacion.set(citaId, {
           datos,
           clienteChatId: userId,
@@ -1123,9 +617,8 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           const fechaDT = parseDate(datos.fecha);
           const fechaLegible = formatDate(fechaDT);
           
-          // Enviar solicitud al barbero (SIN ID visible)
           await sendWithTyping(barberoChat,
-            `🔔 *SOLICITUD DE CITA*\n\n` +
+            `📲 *SOLICITUD DE CITA*\n\n` +
             `👤 Cliente: ${datos.nombreCliente}\n` +
             `💇 Servicio: ${datos.servicio}\n` +
             `📅 Fecha: ${fechaLegible}\n` +
@@ -1137,10 +630,8 @@ async function procesarTags(respuesta, userId, nombreCliente) {
             `⏰ O sugiere otra hora (ej: "3:00 PM mejor")`
           );
           
-          // Marcar que este barbero está esperando respuesta
           respuestasBarberosPendientes.set(barbero.telefono, { citaId, tipo: 'confirmacion' });
           
-          // Timeout: si no responde en 2 minutos
           const timeout = setTimeout(async () => {
             if (citasPendientesConfirmacion.has(citaId)) {
               citasPendientesConfirmacion.delete(citaId);
@@ -1155,18 +646,16 @@ async function procesarTags(respuesta, userId, nombreCliente) {
                 console.error('Error notificando timeout:', e);
               }
             }
-          }, 120000); // 2 minutos
+          }, 120000);
           
           citasPendientesConfirmacion.get(citaId).timeout = timeout;
           
-          // Reemplazar el tag en la respuesta al cliente
           respuesta = respuesta.replace(/<BOOKING:.+?>/, 
             `\n\n⏳ Estoy consultando con ${datos.barbero} si puede atenderte. Te confirmo en un momentito...`
           );
           
         } catch (e) {
           console.error('❌ Error notificando a barbero:', e);
-          // Si falla la notificación al barbero, crear la cita directamente
           const resultado = await crearCita(datos);
           if (resultado.error) {
             respuesta = respuesta.replace(/<BOOKING:.+?>/, `\n\n❌ ${resultado.error}`);
@@ -1175,7 +664,6 @@ async function procesarTags(respuesta, userId, nombreCliente) {
           }
         }
       } else {
-        // Sin barbero específico o barbero = "Cualquiera" o no existe o sin teléfono: crear directamente
         console.log(`📝 Creando cita sin confirmación previa (barbero: ${datos.barbero || 'Cualquiera'})`);
         if (!necesitaConfirmacion && datos.barbero && datos.barbero !== 'Cualquiera') {
           console.log(`   ⚠️ Razón: Barbero "${datos.barbero}" no requiere confirmación (no existe o sin teléfono)`);
@@ -1197,14 +685,12 @@ async function procesarTags(respuesta, userId, nombreCliente) {
       console.error('JSON problemático:', bookingMatch[1]);
       respuesta = respuesta.replace(/<BOOKING:.+?>/, '\n\n❌ Error al procesar la cita (formato incorrecto)');
       
-      // Notificar al owner sobre el error
       await notificarDueno(
         `❌ *ERROR PROCESANDO BOOKING*\n\nUsuario: ${userId}\nJSON: ${bookingMatch[1]}\nError: ${e.message}`
       );
     }
   }
   
-  // Procesar cancelaciones
   const cancelMatch = respuesta.match(/<CANCELLED:(.+?)>/);
   if (cancelMatch) {
     try {
@@ -1231,11 +717,6 @@ async function procesarTags(respuesta, userId, nombreCliente) {
   return respuesta;
 }
 
-/**
- * FUNCIÓN CRÍTICA: Manejar mensajes de barberos
- * Este handler se ejecuta ANTES que el chatWithAI para barberos
- * Detecta respuestas a solicitudes de citas pendientes
- */
 async function handleMensajeBarbero(message, nombreBarbero) {
   const barberoTelefono = message.from;
   const texto = message.body.trim();
@@ -1243,12 +724,11 @@ async function handleMensajeBarbero(message, nombreBarbero) {
   console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombreBarbero}`);
   console.log(`📞 Mensaje de barbero ${nombreBarbero}: "${texto}"`);
   
-  // Verificar si este barbero tiene una respuesta pendiente
   const pendiente = respuestasBarberosPendientes.get(barberoTelefono);
   
   if (!pendiente) {
     console.log(`   ℹ️ No hay respuestas pendientes para este barbero`);
-    return false; // No hay nada pendiente, continuar con flujo normal
+    return false;
   }
   
   const { citaId, tipo } = pendiente;
@@ -1262,20 +742,16 @@ async function handleMensajeBarbero(message, nombreBarbero) {
   
   const textoUpper = texto.toUpperCase();
   
-  // ✅ CASO 1: Barbero confirma con SI
   if (textoUpper === 'SI' || textoUpper === 'SÍ' || textoUpper === 'SÃ' || textoUpper === 'YES') {
     console.log(`   ✅ Barbero confirmó la cita`);
     
-    // Limpiar timeout y mapas
     clearTimeout(solicitud.timeout);
     citasPendientesConfirmacion.delete(citaId);
     respuestasBarberosPendientes.delete(barberoTelefono);
     
-    // Crear la cita
     const resultado = await crearCita(solicitud.datos);
     
     if (resultado.error) {
-      // Error al crear la cita
       await message.reply(`❌ Error al confirmar: ${resultado.error}`);
       
       try {
@@ -1287,7 +763,6 @@ async function handleMensajeBarbero(message, nombreBarbero) {
         console.error('Error notificando cliente:', e);
       }
     } else {
-      // Cita creada exitosamente
       const fechaDT = parseDate(resultado.cita.fecha);
       const fechaLegible = formatDate(fechaDT);
       
@@ -1314,10 +789,9 @@ async function handleMensajeBarbero(message, nombreBarbero) {
       }
     }
     
-    return true; // Mensaje procesado, no continuar con chatWithAI
+    return true;
   }
   
-  // ❌ CASO 2: Barbero rechaza con NO
   if (textoUpper === 'NO') {
     console.log(`   ❌ Barbero rechazó la cita`);
     
@@ -1339,11 +813,9 @@ async function handleMensajeBarbero(message, nombreBarbero) {
       console.error('Error notificando cliente:', e);
     }
     
-    return true; // Mensaje procesado
+    return true;
   }
   
-  // ⏰ CASO 3: Barbero sugiere otra hora
-  // Detectar patrones como "3:00 PM mejor", "mejor a las 4", "10:30 am"
   const horaMatch = texto.match(/(\d{1,2}):?(\d{2})?\s*(am|pm|AM|PM)?/i);
   if (horaMatch) {
     console.log(`   ⏰ Barbero sugirió otra hora: ${texto}`);
@@ -1368,10 +840,9 @@ async function handleMensajeBarbero(message, nombreBarbero) {
       console.error('Error notificando cliente:', e);
     }
     
-    return true; // Mensaje procesado
+    return true;
   }
   
-  // Si no es ninguno de los casos anteriores, podría ser otra cosa
   console.log(`   ℹ️ Respuesta no reconocida, continuando con flujo normal`);
   return false;
 }
@@ -1615,25 +1086,22 @@ client.on('message', async (message) => {
     
     console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
     
-    // ✅ CRÍTICO: Verificar si es un barbero y si tiene respuestas pendientes
     const esBarbero = Object.entries(BARBEROS).find(([nombre, data]) => data.telefono === userId);
     
     if (esBarbero) {
       const [nombreBarbero, dataBarbero] = esBarbero;
       console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombreBarbero}`);
       
-      // Intentar procesar como respuesta a solicitud pendiente
       const procesado = await handleMensajeBarbero(message, nombreBarbero);
       
       if (procesado) {
         console.log(`✅ Respuesta de barbero procesada exitosamente`);
-        return; // No continuar con chatWithAI
+        return;
       }
       
       console.log(`   ℹ️ No era una respuesta a solicitud, continuando con flujo normal`);
     }
     
-    // Procesar mensaje normalmente con IA
     const respuesta = await chatWithAI(userMessage, userId, message.from);
     
     if (respuesta) {
@@ -1670,16 +1138,14 @@ console.log('🕐 Timezone:', TIMEZONE);
 console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
 console.log(`👤 Dueño: ${OWNER_NUMBER}`);
 console.log('');
-console.log('🔧 VERSIÓN V2.1 - CORRECCIONES APLICADAS:');
+console.log('🔧 VERSIÓN V2.3 - CORRECCIONES APLICADAS:');
+console.log('  ✅ Fix /pausar todo ahora funciona con confirmación "Sí"');
+console.log('  ✅ Fix /agendar con sintaxis completa: nombre, servicio, fecha, hora, barbero');
+console.log('  ✅ Fix /citas filtra correctamente por fecha (solo muestra citas del día solicitado)');
 console.log('  ✅ Fix verificación de disponibilidad mejorada con logs');
 console.log('  ✅ Fix flujo de confirmación con barbero ANTES de crear cita');
 console.log('  ✅ Fix barbero puede sugerir otra hora');
 console.log('  ✅ Fix notificaciones correctas (barbero = confirmación, owner = alertas)');
-console.log('  ✅ Fix detección de conflictos de horarios');
-console.log('  ✅ Fix validación de horarios disponibles antes de emitir BOOKING tag');
-console.log('  ✅ FIX V2.1: ID oculto en solicitudes');
-console.log('  ✅ FIX V2.1: Cancelación con información completa');
-console.log('  ✅ FIX V2.1: Confirmación con Ani corregida (verificación de teléfono)');
 console.log('');
 client.initialize();
 
@@ -1690,4 +1156,614 @@ process.on('unhandledRejection', (e) => {
 
 process.on('uncaughtException', (e) => {
   console.error('❌ UNCAUGHT EXCEPTION:', e);
+});console.log('[⚠️ ANTI-BAN] Typing state failed, using simple delay');
+    await humanDelay();
+    await chat.sendMessage(message);
+  }
+}
+
+// ========== WHATSAPP CLIENT ==========
+const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+
+const client = new Client({
+  authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
+  puppeteer: {
+    headless: true,
+    executablePath: WWEBJS_EXECUTABLE,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote'
+    ]
+  },
+  qrMaxRetries: 3,
+  qrTimeout: 0,
+  authTimeout: 0,
 });
+
+// ========== ESTADO GLOBAL ==========
+let BARBERIA_CONFIG = null;
+let BARBEROS = {};
+let CITAS = [];
+let WAITLIST = [];
+let CLIENTES = {};
+const userStates = new Map();
+let BOT_PAUSED_GLOBAL = false;
+let BOT_PAUSED_CHATS = new Set();
+
+// Gestión de confirmaciones pendientes
+const citasPendientesConfirmacion = new Map();
+const respuestasBarberosPendientes = new Map();
+
+// ✅ NUEVO: Estado de espera de confirmación para /pausar todo
+const esperandoConfirmacionPausa = new Map(); // { userId: timestamp }
+
+// ========== FUNCIONES AUXILIARES ==========
+function now() {
+  return DateTime.now().setZone(TIMEZONE);
+}
+
+function parseDate(dateStr) {
+  return DateTime.fromISO(dateStr, { zone: TIMEZONE });
+}
+
+function formatTime(dt) {
+  return dt.toFormat('h:mm a');
+}
+
+function formatDate(dt) {
+  return dt.toFormat('EEEE d \'de\' MMMM', { locale: 'es' });
+}
+
+// ========== INICIALIZACIÓN DE ARCHIVOS ==========
+async function initDataFiles() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(path.join(DATA_DIR, 'session'), { recursive: true });
+  
+  const files = {
+    [BOOKINGS_FILE]: [],
+    [WAITLIST_FILE]: [],
+    [BARBERS_FILE]: {},
+    [CLIENTS_FILE]: {},
+    [SCHEDULED_MESSAGES_FILE]: []
+  };
+  
+  for (const [file, defaultContent] of Object.entries(files)) {
+    if (!fssync.existsSync(file)) {
+      await fs.writeFile(file, JSON.stringify(defaultContent, null, 2), 'utf-8');
+      console.log(`✅ Creado: ${path.basename(file)}`);
+    }
+  }
+  
+  const uploadsBarbers = path.join(ROOT_DIR, 'barberos.json');
+  if (fssync.existsSync(uploadsBarbers)) {
+    try {
+      const barbersData = await fs.readFile(uploadsBarbers, 'utf-8');
+      const barbersObj = JSON.parse(barbersData);
+      
+      if (Object.keys(barbersObj).length > 0) {
+        console.log('📋 Copiando barberos.json desde raíz al directorio de datos...');
+        await fs.writeFile(BARBERS_FILE, barbersData, 'utf-8');
+        console.log(`✅ ${Object.keys(barbersObj).length} barberos copiados: ${Object.keys(barbersObj).join(', ')}`);
+      } else {
+        console.log('⚠️  barberos.json en raíz está vacío, no se copia');
+      }
+    } catch (e) {
+      console.error('❌ Error copiando barberos.json:', e.message);
+    }
+  } else {
+    console.log('⚠️  No se encontró barberos.json en la raíz del proyecto');
+  }
+  
+  await cargarDatos();
+}
+
+async function cargarDatos() {
+  try {
+    CITAS = JSON.parse(await fs.readFile(BOOKINGS_FILE, 'utf-8'));
+    WAITLIST = JSON.parse(await fs.readFile(WAITLIST_FILE, 'utf-8'));
+    BARBEROS = JSON.parse(await fs.readFile(BARBERS_FILE, 'utf-8'));
+    CLIENTES = JSON.parse(await fs.readFile(CLIENTS_FILE, 'utf-8'));
+    console.log('✅ Datos cargados correctamente');
+    console.log(`   - Citas: ${CITAS.length}`);
+    console.log(`   - Barberos: ${Object.keys(BARBEROS).length}`);
+    console.log(`   - Clientes: ${Object.keys(CLIENTES).length}`);
+  } catch (error) {
+    console.error('❌ Error cargando datos:', error.message);
+  }
+}
+
+async function guardarCitas() {
+  await fs.writeFile(BOOKINGS_FILE, JSON.stringify(CITAS, null, 2), 'utf-8');
+}
+
+async function guardarWaitlist() {
+  await fs.writeFile(WAITLIST_FILE, JSON.stringify(WAITLIST, null, 2), 'utf-8');
+}
+
+async function guardarBarberos() {
+  await fs.writeFile(BARBERS_FILE, JSON.stringify(BARBEROS, null, 2), 'utf-8');
+}
+
+async function guardarClientes() {
+  await fs.writeFile(CLIENTS_FILE, JSON.stringify(CLIENTES, null, 2), 'utf-8');
+}
+
+async function cargarConfigBarberia() {
+  try {
+    const raw = await fs.readFile(BARBERIA_CONFIG_PATH, 'utf-8');
+    BARBERIA_CONFIG = JSON.parse(raw);
+    console.log(`✅ Config barbería cargada: ${BARBERIA_CONFIG.negocio.nombre}`);
+  } catch (error) {
+    console.error('❌ Error cargando config barbería:', error.message);
+    console.error('⚠️  Verifica que barberia_base.txt esté en la raíz del proyecto');
+  }
+}
+
+// ========== GESTIÓN DE CLIENTES ==========
+function getOrCreateClient(telefono, nombre = null) {
+  if (!CLIENTES[telefono]) {
+    CLIENTES[telefono] = {
+      nombre: nombre || 'Cliente',
+      telefono,
+      historial: [],
+      preferencias: {
+        barbero: null,
+        servicio: null
+      },
+      primeraVisita: now().toISO(),
+      ultimaVisita: now().toISO(),
+      totalCitas: 0,
+      totalCancelaciones: 0
+    };
+    guardarClientes();
+  } else if (nombre && CLIENTES[telefono].nombre === 'Cliente') {
+    CLIENTES[telefono].nombre = nombre;
+    guardarClientes();
+  }
+  return CLIENTES[telefono];
+}
+
+function esClienteRecurrente(telefono) {
+  const cliente = CLIENTES[telefono];
+  return cliente && cliente.totalCitas > 0;
+}
+
+function registrarAccionCliente(telefono, accion, detalles = {}) {
+  const cliente = getOrCreateClient(telefono);
+  cliente.historial.push({
+    fecha: now().toISO(),
+    accion,
+    ...detalles
+  });
+  cliente.ultimaVisita = now().toISO();
+  guardarClientes();
+}
+
+// ========== GESTIÓN DE BARBEROS ==========
+function obtenerBarberosDisponibles() {
+  return Object.entries(BARBEROS)
+    .filter(([nombre, data]) => data.estado !== 'cerrado')
+    .map(([nombre, data]) => ({
+      nombre,
+      estado: data.estado,
+      especialidades: data.especialidades || []
+    }));
+}
+
+function obtenerEstadoBarbero(nombreBarbero) {
+  const barbero = BARBEROS[nombreBarbero];
+  if (!barbero) return 'no_existe';
+  
+  const ahora = now();
+  const horaActual = ahora.hour * 60 + ahora.minute;
+  
+  if (barbero.estado === 'descanso') return 'descanso';
+  if (barbero.estado === 'cerrado') return 'cerrado';
+  
+  if (barbero.bloques && barbero.bloques.length > 0) {
+    for (const bloque of barbero.bloques) {
+      const [inicioH, inicioM] = bloque.inicio.split(':').map(Number);
+      const [finH, finM] = bloque.fin.split(':').map(Number);
+      const inicioMin = inicioH * 60 + inicioM;
+      const finMin = finH * 60 + finM;
+      
+      if (horaActual >= inicioMin && horaActual <= finMin) {
+        return 'bloqueado';
+      }
+    }
+  }
+  
+  const citaActual = CITAS.find(c => {
+    if (c.barbero !== nombreBarbero || c.estado === 'cancelada') return false;
+    const citaDT = parseDate(`${c.fecha}T${c.hora_inicio}`);
+    const diff = ahora.diff(citaDT, 'minutes').minutes;
+    return diff >= 0 && diff < (c.duracion || 30);
+  });
+  
+  if (citaActual) return 'en_cita';
+  
+  return 'disponible';
+}
+
+// ========== GESTIÓN DE CITAS ==========
+function obtenerCitasDelDia(fecha = null, barbero = null) {
+  const fechaBuscar = fecha || now().toFormat('yyyy-MM-dd');
+  return CITAS.filter(c => {
+    if (c.estado === 'cancelada') return false;
+    if (c.fecha !== fechaBuscar) return false;
+    if (barbero && c.barbero !== barbero) return false;
+    return true;
+  });
+}
+
+function verificarDisponibilidad(fecha, hora, duracion, barbero = null) {
+  const horaSolicitada = parseDate(`${fecha}T${hora}`);
+  const horaFin = horaSolicitada.plus({ minutes: duracion });
+  
+  console.log(`🔍 Verificando disponibilidad:`);
+  console.log(`   - Fecha: ${fecha}`);
+  console.log(`   - Hora solicitada: ${hora} (${horaSolicitada.toISO()})`);
+  console.log(`   - Duración: ${duracion} min`);
+  console.log(`   - Hora fin: ${horaFin.toFormat('HH:mm')}`);
+  console.log(`   - Barbero: ${barbero || 'Cualquiera'}`);
+  
+  const citasDelDia = obtenerCitasDelDia(fecha, barbero);
+  console.log(`   - Citas existentes: ${citasDelDia.length}`);
+  
+  for (const cita of citasDelDia) {
+    const citaInicio = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
+    const citaFin = citaInicio.plus({ minutes: cita.duracion || 30 });
+    
+    console.log(`   - Comparando con cita existente: ${cita.hora_inicio} - ${citaFin.toFormat('HH:mm')} (${cita.nombreCliente})`);
+    
+    if (horaSolicitada < citaFin && horaFin > citaInicio) {
+      console.log(`   ❌ CONFLICTO DETECTADO con cita de ${cita.nombreCliente}`);
+      return false;
+    }
+  }
+  
+  console.log(`   ✅ Horario disponible`);
+  return true;
+}
+
+function obtenerHorarioDelDia(diaSemana) {
+  if (!BARBERIA_CONFIG) return null;
+  
+  const config = BARBERIA_CONFIG.horario;
+  
+  if (diaSemana >= 1 && diaSemana <= 5) {
+    const [inicio, fin] = config.lun_vie.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  } else if (diaSemana === 6) {
+    const [inicio, fin] = config.sab.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  } else {
+    if (config.dom.toLowerCase() === 'cerrado') {
+      return null;
+    }
+    const [inicio, fin] = config.dom.split(' - ');
+    return { inicio: convertirA24h(inicio), fin: convertirA24h(fin) };
+  }
+}
+
+function convertirA24h(hora12) {
+  const match = hora12.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!match) return hora12;
+  
+  let [, h, m, periodo] = match;
+  h = parseInt(h);
+  m = parseInt(m);
+  
+  if (periodo.toUpperCase() === 'PM' && h !== 12) h += 12;
+  if (periodo.toUpperCase() === 'AM' && h === 12) h = 0;
+  
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function obtenerProximosSlots(fecha = null, cantidad = 3, servicio = null, barbero = null) {
+  const ahora = now();
+  const fechaBuscar = fecha || ahora.toFormat('yyyy-MM-dd');
+  const duracion = servicio && BARBERIA_CONFIG ? (BARBERIA_CONFIG.servicios[servicio]?.min || 30) : 30;
+  
+  let diaSemana;
+  if (fecha) {
+    const fechaDT = DateTime.fromFormat(fecha, 'yyyy-MM-dd', { zone: TIMEZONE });
+    diaSemana = fechaDT.weekday;
+  } else {
+    diaSemana = ahora.weekday;
+  }
+  
+  const horarioHoy = obtenerHorarioDelDia(diaSemana);
+  
+  if (!horarioHoy) {
+    console.log(`⚠️  No hay horario configurado para el día ${diaSemana}`);
+    return [];
+  }
+  
+  const [aperturaH, aperturaM] = horarioHoy.inicio.split(':').map(Number);
+  const [cierreH, cierreM] = horarioHoy.fin.split(':').map(Number);
+  
+  let fechaDT = fecha ? 
+    DateTime.fromFormat(fecha, 'yyyy-MM-dd', { zone: TIMEZONE }) : 
+    ahora;
+  
+  let horaActual = DateTime.fromObject({ 
+    year: fechaDT.year, 
+    month: fechaDT.month, 
+    day: fechaDT.day,
+    hour: aperturaH,
+    minute: aperturaM
+  }, { zone: TIMEZONE });
+  
+  const horaCierre = DateTime.fromObject({ 
+    year: fechaDT.year, 
+    month: fechaDT.month, 
+    day: fechaDT.day,
+    hour: cierreH,
+    minute: cierreM
+  }, { zone: TIMEZONE });
+  
+  if (fechaBuscar === ahora.toFormat('yyyy-MM-dd')) {
+    const minutoActual = ahora.hour * 60 + ahora.minute;
+    const minutoApertura = aperturaH * 60 + aperturaM;
+    
+    if (minutoActual > minutoApertura) {
+      horaActual = ahora.plus({ minutes: 30 });
+      if (horaActual.minute < 30) {
+        horaActual = horaActual.set({ minute: 30, second: 0 });
+      } else {
+        horaActual = horaActual.plus({ hours: 1 }).set({ minute: 0, second: 0 });
+      }
+    }
+  }
+  
+  const slots = [];
+  
+  while (horaActual < horaCierre && slots.length < cantidad) {
+    const hora = horaActual.toFormat('HH:mm');
+    const horaNum = horaActual.hour;
+    
+    if (BARBERIA_CONFIG && BARBERIA_CONFIG.horario.almuerzo && 
+        horaNum >= BARBERIA_CONFIG.horario.almuerzo.start && 
+        horaNum < BARBERIA_CONFIG.horario.almuerzo.end) {
+      horaActual = horaActual.plus({ minutes: 30 });
+      continue;
+    }
+    
+    if (verificarDisponibilidad(fechaBuscar, hora, duracion, barbero)) {
+      slots.push(formatTime(horaActual));
+    }
+    
+    horaActual = horaActual.plus({ minutes: 30 });
+  }
+  
+  return slots;
+}
+
+async function crearCita(datos) {
+  const { nombreCliente, servicio, fecha, hora_inicio, barbero, telefono } = datos;
+  
+  if (!BARBERIA_CONFIG) {
+    return { error: 'Error de configuración del sistema' };
+  }
+  
+  const duracion = BARBERIA_CONFIG.servicios[servicio]?.min || 30;
+  
+  console.log(`🔍 Verificación final antes de crear cita:`);
+  const disponible = verificarDisponibilidad(fecha, hora_inicio, duracion, barbero);
+  
+  if (!disponible) {
+    console.log(`❌ Horario NO disponible al intentar crear la cita`);
+    return { error: 'Ese horario ya no está disponible' };
+  }
+  
+  const cita = {
+    id: `CITA-${Date.now()}`,
+    nombreCliente,
+    telefono,
+    servicio,
+    fecha,
+    hora_inicio,
+    duracion,
+    barbero: barbero || 'Cualquiera',
+    estado: 'confirmada',
+    createdAt: now().toISO(),
+    notificaciones: {
+      recordatorio: false,
+      review: false
+    }
+  };
+  
+  CITAS.push(cita);
+  await guardarCitas();
+  
+  console.log(`✅ Cita creada exitosamente: ${cita.id}`);
+  
+  const cliente = getOrCreateClient(telefono, nombreCliente);
+  cliente.totalCitas++;
+  if (barbero) cliente.preferencias.barbero = barbero;
+  cliente.preferencias.servicio = servicio;
+  registrarAccionCliente(telefono, 'cita_creada', { citaId: cita.id, servicio, fecha, hora_inicio });
+  
+  await programarRecordatorio(cita);
+  
+  if (barbero && barbero !== 'Cualquiera' && BARBEROS[barbero]) {
+    const fechaDT = parseDate(fecha);
+    const fechaLegible = formatDate(fechaDT);
+    
+    await notificarBarbero(barbero, 
+      `✅ *CITA CONFIRMADA*\n\n` +
+      `👤 Cliente: ${nombreCliente}\n` +
+      `💇 Servicio: ${servicio}\n` +
+      `📅 Fecha: ${fechaLegible}\n` +
+      `🕐 Hora: ${hora_inicio}\n` +
+      `⏱️ Duración: ${duracion} min`
+    );
+  }
+  
+  await notificarDueno(`📅 *NUEVA CITA*\n\n👤 Cliente: ${nombreCliente}\n💇 Servicio: ${servicio}\n📆 Fecha: ${fecha}\n🕐 Hora: ${hora_inicio}\n👨‍🦲 Barbero: ${barbero || 'Cualquiera'}`);
+  
+  return { success: true, cita };
+}
+
+async function cancelarCita(nombreCliente, fecha, hora_inicio) {
+  const cita = CITAS.find(c => 
+    c.nombreCliente.toLowerCase() === nombreCliente.toLowerCase() &&
+    c.fecha === fecha &&
+    c.hora_inicio === hora_inicio &&
+    c.estado !== 'cancelada'
+  );
+  
+  if (!cita) {
+    return { error: 'No encontré esa cita' };
+  }
+  
+  cita.estado = 'cancelada';
+  cita.canceladaAt = now().toISO();
+  await guardarCitas();
+  
+  if (cita.telefono) {
+    const cliente = CLIENTES[cita.telefono];
+    if (cliente) {
+      cliente.totalCancelaciones++;
+      registrarAccionCliente(cita.telefono, 'cita_cancelada', { citaId: cita.id });
+    }
+  }
+  
+  if (cita.barbero && cita.barbero !== 'Cualquiera' && BARBEROS[cita.barbero]) {
+    const fechaDT = parseDate(cita.fecha);
+    const fechaLegible = formatDate(fechaDT);
+    
+    await notificarBarbero(cita.barbero, 
+      `❌ *CITA CANCELADA*\n\n` +
+      `👤 Cliente: ${nombreCliente}\n` +
+      `📅 Fecha: ${fechaLegible}\n` +
+      `🕐 Hora: ${hora_inicio}`
+    );
+  }
+  
+  await notificarDueno(
+    `❌ *CITA CANCELADA*\n\n` +
+    `👤 Cliente: ${nombreCliente}\n` +
+    `💇 Servicio: ${cita.servicio}\n` +
+    `📆 Fecha: ${fecha}\n` +
+    `🕐 Hora: ${hora_inicio}\n` +
+    `👨‍🦲 Barbero: ${cita.barbero}`
+  );
+  
+  await procesarWaitlist(fecha);
+  
+  return { success: true, cita };
+}
+
+// ========== WAITLIST ==========
+async function agregarAWaitlist(telefono, nombreCliente, servicio, fecha) {
+  const entrada = {
+    id: `WAIT-${Date.now()}`,
+    telefono,
+    nombreCliente,
+    servicio,
+    fecha,
+    createdAt: now().toISO()
+  };
+  
+  WAITLIST.push(entrada);
+  await guardarWaitlist();
+  
+  registrarAccionCliente(telefono, 'waitlist_agregado', { servicio, fecha });
+  
+  return entrada;
+}
+
+async function procesarWaitlist(fecha) {
+  const enEspera = WAITLIST.filter(w => w.fecha === fecha);
+  
+  if (enEspera.length === 0) return;
+  
+  const slotsDisponibles = obtenerProximosSlots(fecha, 5);
+  
+  if (slotsDisponibles.length === 0) return;
+  
+  const primero = enEspera[0];
+  const horaDisponible = slotsDisponibles[0];
+  
+  try {
+    const chat = await client.getChatById(primero.telefono);
+    await sendWithTyping(chat, 
+      `¡Hola ${primero.nombreCliente}! 🎉\n\nSe liberó un espacio para *${primero.servicio}* hoy a las *${horaDisponible}*.\n\n¿Lo tomas? Responde *Sí* o *No*`
+    );
+    
+    setTimeout(() => {
+      const estaEnWaitlist = WAITLIST.find(w => w.id === primero.id);
+      if (estaEnWaitlist) {
+        WAITLIST = WAITLIST.filter(w => w.id !== primero.id);
+        guardarWaitlist();
+        procesarWaitlist(fecha);
+      }
+    }, 120000);
+    
+  } catch (error) {
+    console.error('Error notificando waitlist:', error.message);
+  }
+}
+
+// ========== RECORDATORIOS Y NOTIFICACIONES ==========
+async function programarRecordatorio(cita) {
+  const citaDT = parseDate(`${cita.fecha}T${cita.hora_inicio}`);
+  const recordatorioTime = citaDT.minus({ hours: 1 });
+  
+  const ahora = now();
+  const diff = recordatorioTime.diff(ahora, 'milliseconds').milliseconds;
+  
+  if (diff > 0 && diff < 86400000) {
+    setTimeout(async () => {
+      try {
+        const chat = await client.getChatById(cita.telefono);
+        await sendWithTyping(chat, 
+          `🔔 *Recordatorio*\n\nHola ${cita.nombreCliente}! Te esperamos en 1 hora para tu *${cita.servicio}*.\n\n📍 ${BARBERIA_CONFIG.negocio.direccion}\n🕐 ${cita.hora_inicio}\n\n¡Nos vemos pronto! 😊`
+        );
+        
+        cita.notificaciones.recordatorio = true;
+        await guardarCitas();
+      } catch (error) {
+        console.error('Error enviando recordatorio:', error.message);
+      }
+    }, diff);
+  }
+  
+  const reviewTime = citaDT.plus({ days: 2 });
+  const reviewDiff = reviewTime.diff(ahora, 'milliseconds').milliseconds;
+  
+  if (reviewDiff > 0 && reviewDiff < 172800000) {
+    setTimeout(async () => {
+      try {
+        const chat = await client.getChatById(cita.telefono);
+        await sendWithTyping(chat, 
+          `¡Hola ${cita.nombreCliente}! 😊\n\nEsperamos que hayas quedado contento con tu ${cita.servicio}.\n\n¿Nos ayudas con una reseña? ⭐️\n${GOOGLE_REVIEW_LINK}\n\n¡Gracias por preferirnos!`
+        );
+        
+        cita.notificaciones.review = true;
+        await guardarCitas();
+      } catch (error) {
+        console.error('Error enviando solicitud de review:', error.message);
+      }
+    }, reviewDiff);
+  }
+}
+
+async function notificarBarbero(nombreBarbero, mensaje) {
+  const barbero = BARBEROS[nombreBarbero];
+  if (!barbero || !barbero.telefono) {
+    console.error(`⚠️ No se pudo notificar a ${nombreBarbero}: sin teléfono configurado`);
+    return;
+  }
+  
+  try {
+    const chat = await client.getChatById(barbero.telefono);
+    await sendWithTyping(chat, mensaje);
+    console.log(`✅ Notificación enviada a barbero ${nombreBarbero}`);
+  } catch (error) {
