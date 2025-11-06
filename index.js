@@ -1105,7 +1105,6 @@ client.on('message', async (message) => {
     const respuesta = await chatWithAI(userMessage, userId, message.from);
     
     if (respuesta) {
-      await humanDelay();
       await message.reply(respuesta);
     }
     
