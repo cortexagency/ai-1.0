@@ -779,6 +779,44 @@ async function notificarBarberoTelegram(nombreBarbero, mensaje) {
   }
 }
 
+// ========== TRANSCRIPCIÓN DE AUDIO ==========
+async function transcribirAudio(message) {
+  try {
+    const media = await message.downloadMedia();
+    
+    if (!media) {
+      console.error('❌ No se pudo descargar el audio');
+      return null;
+    }
+    
+    // Convertir base64 a buffer
+    const audioBuffer = Buffer.from(media.data, 'base64');
+    
+    // Guardar temporalmente el archivo
+    const tempPath = path.join(DATA_DIR, `temp_audio_${Date.now()}.ogg`);
+    await fs.writeFile(tempPath, audioBuffer);
+    
+    console.log('🎤 Transcribiendo audio con Whisper...');
+    
+    // Usar Whisper API de OpenAI
+    const transcription = await openai.audio.transcriptions.create({
+      file: require('fs').createReadStream(tempPath),
+      model: 'whisper-1',
+      language: 'es' // Español
+    });
+    
+    // Eliminar archivo temporal
+    await fs.unlink(tempPath);
+    
+    console.log('✅ Audio transcrito:', transcription.text);
+    return transcription.text;
+    
+  } catch (error) {
+    console.error('❌ Error transcribiendo audio:', error.message);
+    return null;
+  }
+}
+
 // ========== COMANDOS ==========
 async function handleCommand(command, args, userId) {
   const esOwner = userId === OWNER_CHAT_ID;
@@ -1672,7 +1710,25 @@ client.on('message', async (message) => {
     if (message.from.includes('@g.us') || message.fromMe) return;
     
     const userId = message.from;
-    const userMessage = (message.body || '').trim();
+    let userMessage = (message.body || '').trim();
+    
+    // 🎤 NUEVO: Manejar mensajes de voz
+    if (message.hasMedia && (message.type === 'ptt' || message.type === 'audio')) {
+      console.log('🎤 Mensaje de voz detectado, transcribiendo...');
+      
+      // Enviar indicador de "escribiendo" mientras procesa
+      const chat = await message.getChat();
+      await chat.sendStateTyping();
+      
+      userMessage = await transcribirAudio(message);
+      
+      if (!userMessage) {
+        await message.reply('Disculpa, no pude entender el audio. ¿Podrías escribir tu mensaje o enviar el audio de nuevo?');
+        return;
+      }
+      
+      console.log(`🎤 Audio transcrito: "${userMessage}"`);
+    }
     
     if (!userMessage) return;
     
