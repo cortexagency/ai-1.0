@@ -22,6 +22,17 @@ const express = require('express');
 let OWNER_NUMBER = process.env.OWNER_NUMBER || '573223698554';
 let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 
+// ========== TELEGRAM CONFIGURATION (OPCIONAL) ==========
+const TELEGRAM_ENABLED = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+
+if (TELEGRAM_ENABLED) {
+  console.log('📱 Notificaciones por Telegram: ACTIVADAS');
+} else {
+  console.log('📱 Notificaciones por Telegram: DESACTIVADAS (configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID para activar)');
+}
+
 const GOOGLE_REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/TU_LINK_AQUI/review';
 const TIMEZONE = process.env.TZ || 'America/Bogota';
 const PORT = process.env.PORT || 3000;
@@ -678,7 +689,10 @@ async function notificarBarbero(nombreBarbero, mensaje) {
   try {
     const chat = await client.getChatById(barbero.telefono);
     await sendWithTyping(chat, mensaje);
-    console.log(`✅ Notificación enviada a barbero ${nombreBarbero}`);
+    console.log(`✅ Notificación enviada a barbero ${nombreBarbero} por WhatsApp`);
+    
+    // También enviar por Telegram si el barbero lo tiene configurado
+    await notificarBarberoTelegram(nombreBarbero, mensaje);
   } catch (error) {
     console.error(`❌ Error notificando a barbero ${nombreBarbero}:`, error.message);
   }
@@ -692,8 +706,76 @@ async function notificarDueno(mensaje, contextChatId = null) {
       fullMsg += `\n\n💬 Chat: ${contextChatId}`;
     }
     await sendWithTyping(chat, fullMsg);
+    
+    // También enviar a Telegram si está configurado
+    if (TELEGRAM_ENABLED) {
+      await enviarTelegram(fullMsg);
+    }
   } catch (error) {
     console.error('❌ Error notificando al dueño:', error.message);
+  }
+}
+
+// ========== TELEGRAM NOTIFICATIONS ==========
+async function enviarTelegram(mensaje) {
+  if (!TELEGRAM_ENABLED) return;
+  
+  try {
+    const https = require('https');
+    
+    // Limpiar el mensaje de markdown de WhatsApp y convertir a HTML de Telegram
+    let telegramMsg = mensaje
+      .replace(/\*/g, '<b>') // Primera * a <b>
+      .replace(/<b>/g, (match, offset, string) => {
+        // Alternar entre <b> y </b>
+        const count = string.substring(0, offset).split('<b>').length - 1;
+        return count % 2 === 0 ? '<b>' : '</b>';
+      })
+      .replace(/\n/g, '%0A'); // Saltos de línea
+    
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(mensaje)}&parse_mode=HTML`;
+    
+    return new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            console.log('📱 Notificación enviada a Telegram');
+            resolve(JSON.parse(data));
+          } else {
+            console.error('❌ Error Telegram:', data);
+            reject(new Error(`Telegram API error: ${res.statusCode}`));
+          }
+        });
+      }).on('error', (err) => {
+        console.error('❌ Error enviando a Telegram:', err.message);
+        reject(err);
+      });
+    });
+  } catch (error) {
+    console.error('❌ Error en enviarTelegram:', error.message);
+  }
+}
+
+async function notificarBarberoTelegram(nombreBarbero, mensaje) {
+  // Si el barbero tiene Telegram configurado, enviar ahí también
+  const barbero = BARBEROS[nombreBarbero];
+  if (barbero && barbero.telegram_chat_id && TELEGRAM_BOT_TOKEN) {
+    try {
+      const https = require('https');
+      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${barbero.telegram_chat_id}&text=${encodeURIComponent(mensaje)}&parse_mode=HTML`;
+      
+      https.get(url, (res) => {
+        if (res.statusCode === 200) {
+          console.log(`📱 Notificación enviada a ${nombreBarbero} por Telegram`);
+        }
+      }).on('error', (err) => {
+        console.error(`❌ Error notificando a ${nombreBarbero} por Telegram:`, err.message);
+      });
+    } catch (error) {
+      console.error(`❌ Error en notificarBarberoTelegram:`, error.message);
+    }
   }
 }
 
