@@ -1,6 +1,7 @@
 {
   "Liliana": {
     "telefono": "573206330946@c.us",
+    "telegram_chat_id": "",
     "horario": {
       "lun_vie": "9:00 AM - 8:00 PM",
       "sab": "9:00 AM - 6:00 PM",
@@ -13,6 +14,7 @@
   },
   "Mafe": {
     "telefono": "573052104351@c.us",
+    "telegram_chat_id": "",
     "horario": {
       "lun_vie": "9:00 AM - 8:00 PM",
       "sab": "9:00 AM - 6:00 PM",
@@ -25,6 +27,7 @@
   },
   "Ani": {
     "telefono": "573162784140@c.us",
+    "telegram_chat_id": "",
     "horario": {
       "lun_vie": "10:00 AM - 7:00 PM",
       "sab": "10:00 AM - 5:00 PM",
