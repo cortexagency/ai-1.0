@@ -75,11 +75,10 @@ async function sendWithTyping(chat, message) {
 }
 
 // ========== WHATSAPP CLIENT ==========
-const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usrin/chromium';
+const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
-const client = new Client({
 
-// ====== WhatsApp Slash Router (ensured) ======
+
 async function __slashRouter(body, userId, chatId) {
   const clean = String(body || '').trim();
   if (!clean.startsWith('/')) return false;
@@ -94,6 +93,11 @@ async function __slashRouter(body, userId, chatId) {
   }
   return true;
 }
+
+const client = new Client({
+
+// ====== WhatsApp Slash Router (ensured) ======
+
   authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
   puppeteer: {
     headless: true,
@@ -729,7 +733,7 @@ function sanitizarHTML(texto) {
     .replace(/>/g, '&gt;');
   
   textoLimpio = textoLimpio
-    .replace(/\*(.*?)\*/g, '<b>$1<>')
+    .replace(/\*(.*?)\*/g, '</b>')
     .replace(/_(.*?)_/g, '<i>$1</i>');
   
   return textoLimpio;
@@ -754,7 +758,7 @@ async function enviarTelegram(mensaje, chatId = null) {
       const options = {
         hostname: 'api.telegram.org',
         port: 443,
-        path: `ot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1082,7 +1086,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
         return '⏸️ Acción: *Pausar bot en TODOS los chats*\\n\\n✅ Responde *SI* para confirmar\\n❌ Responde *NO* para cancelar';
       }
       // assume it's a phone/chat id
-      const normalized = target.endswith('@c.us') ? target : (target.replace(/[^0-9]/g, '') + '@c.us');
+      const normalized = target.endsWith('@c.us') ? target : (target.replace(/[^0-9]/g, '') + '@c.us');
       comandosPendientesConfirmacion.clear();
       comandosPendientesConfirmacion.set('PAUSAR-' + Date.now(), { userId, chatId, canal, accion: 'pausar', parametros: { target: normalized } });
       return `⏸️ Acción: *Pausar bot para* ${normalized}\\n\\n✅ Responde *SI* para confirmar\\n❌ Responde *NO* para cancelar`;
@@ -1097,7 +1101,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
           `/pausar - Pausar bot en este chat\n` +
           `/iniciar - Reactivar bot\n\n` +
           `*Barberos:*\n` +
-          `arberos - Lista de barberos\n` +
+          `/barberos - Lista de barberos\n` +
           `/disponibilidad - Ver slots libres\n\n` +
           `*Citas:*\n` +
           `/vercitas - Todas las citas de hoy\n` +
@@ -1128,7 +1132,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
       if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
       return await procesarComandoConIA(command, fullMessage, userId, chatId, canal);
     
-    case 'arberos':
+    case '/barberos':
       let lista = '*👨‍🦲 BARBEROS*\n\n';
       for (const [nombreBarbero, data] of Object.entries(BARBEROS)) {
         const estado = obtenerEstadoBarbero(nombreBarbero);
@@ -1176,7 +1180,7 @@ async function testTelegramConnection() {
   const https = require('https');
   
   return new Promise((resolve, reject) => {
-    const url = `https://api.telegram.orgot${TELEGRAM_BOT_TOKEN}/getMe`;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe`;
     
     https.get(url, (res) => {
       let data = '';
@@ -1367,7 +1371,7 @@ async function iniciarTelegramBot() {
     isPolling = true;
     
     try {
-      const url = `https://api.telegram.orgot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
+      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
       
       const req = https.get(url, (res) => {
         let data = '';
