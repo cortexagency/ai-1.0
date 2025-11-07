@@ -25,6 +25,52 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 
 if (TELEGRAM_ENABLED) {
   console.log('📱 Telegram: ACTIVADO - Modo Panel de Gestión');
+
+// ====== Telegram Telegraf Bridge (auto-inserted) ======
+let __telegrafBridge = null;
+try {
+  if (TELEGRAM_ENABLED) {
+    const { Telegraf } = require('telegraf');
+    __telegrafBridge = new Telegraf(TELEGRAM_BOT_TOKEN);
+    console.log('📲 Telegraf bridge: ON');
+
+    function __normalizeCommand(text) {
+      return text.replace(/\s+/g, ' ').trim();
+    }
+
+    __telegrafBridge.on('text', async (ctx) => {
+      try {
+        const chatId = String(ctx.chat.id);
+        const text = (ctx.message?.text || '').trim();
+        if (!text.startsWith('/')) return;
+
+        const clean = __normalizeCommand(text);
+        const parts = clean.split(' ');
+        const command = parts[0].toLowerCase().replace(/^\//, '');
+        const args = parts.slice(1);
+
+        // default userId to OWNER on Telegram to allow privileged cmds from your chat
+        const userId = TELEGRAM_CHAT_ID;
+
+        if (typeof handleCommand === 'function') {
+          await handleCommand(command, args, userId, chatId, 'telegram');
+        } else if (typeof handleCommandTelegram === 'function') {
+          // legacy fallback if it exists
+          await handleCommandTelegram(command, args, chatId, 'owner');
+        } else {
+          await ctx.reply('⚠️ No hay handler de comandos disponible.');
+        }
+      } catch (err) {
+        console.error('❌ Error en Telegraf bridge:', err.message);
+        try { await ctx.reply('⚠️ Error procesando el comando.'); } catch(e) {}
+      }
+    });
+
+    __telegrafBridge.launch().then(() => console.log('🚀 Telegraf bridge iniciado')).catch(e => console.error('❌ Telegraf launch error:', e.message));
+  }
+} catch (e) {
+  console.error('❌ Telegraf init error:', e.message);
+}
   console.log(`   Owner Chat ID: ${TELEGRAM_CHAT_ID}`);
 } else {
   console.log('📱 Telegram: DESACTIVADO');
@@ -2097,3 +2143,12 @@ client.on('ready', async () => {
   
   console.log('📋 Estado del sistema:');
   console.log(`
+
+// Legacy wrapper: route to handleCommand to avoid undefined errors
+function handleCommandTelegram(command, args, chatId, rol = 'owner') {
+  try {
+    return handleCommand(command, args, TELEGRAM_CHAT_ID || 'owner', chatId, 'telegram');
+  } catch (e) {
+    console.error('handleCommandTelegram wrapper error:', e.message);
+  }
+}
