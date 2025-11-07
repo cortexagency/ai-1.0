@@ -1480,6 +1480,7 @@ async function notificarDueno(mensaje, contextChatId = null) {
 
 // ========== TELEGRAM FUNCTIONS ==========
 function sanitizarHTML(texto) {
+  // 🔥 FIX: Validar que sea string
   if (typeof texto !== 'string') {
     texto = String(texto);
   }
@@ -1563,93 +1564,7 @@ async function notificarBarberoTelegram(nombreBarbero, mensaje) {
 }
 
 // ========== PROCESAMIENTO INTELIGENTE DE COMANDOS CON IA (FIXED) ==========
-async function procesarComandoConIA(comando, mensaje, userId, chatId, canal) {
-  const prompt = `Eres un asistente que procesa comandos de gestión de barbería.
-
-El usuario envió: "${mensaje}"
-
-Debes extraer la información del comando y devolverla en JSON VÁLIDO.
-
-Comandos disponibles:
-- /agendar {nombre} {servicio} {hora}: Crear cita walk-in
-- /cancelar {hora} o {nombre}: Cancelar cita
-- /cerrar {rango}: Bloquear horario (ej: 3pm-5pm)
-- /abrir {rango}: Desbloquear horario
-- /descanso iniciar {barbero}: Poner barbero en descanso
-- /descanso terminar {barbero}: Terminar descanso
-- /pausar {target}: Pausar bot (todo/numero específico)
-- /iniciar {target}: Reactivar bot
-- /pasar {hora/nombre} a {barbero}: Reasignar cita
-
-Fecha de hoy: ${now().toFormat('yyyy-MM-dd')}
-Hora actual: ${now().toFormat('HH:mm')}
-
-Extrae la información y devuelve JSON con:
-{
-  "accion": "agendar|cancelar|cerrar|abrir|descanso|pausar|iniciar|pasar",
-  "parametros": {...},
-  "confirmacion": "texto amigable describiendo qué se va a hacer",
-  "error": null o "mensaje de error si falta info"
-}
-
-Ejemplos:
-"/agendar Juan Corte 4:30pm" →
-{
-  "accion": "agendar",
-  "parametros": {"nombre": "Juan", "servicio": "Corte", "hora": "16:30", "fecha": "2025-11-05"},
-  "confirmacion": "Vas a agendar una cita de Corte para Juan hoy a las 4:30 PM",
-  "error": null
-}
-
-IMPORTANTE: Responde SOLO con JSON válido, sin texto adicional antes o después.`;
-
-  try {
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 300
-    });
-    
-    let respuesta = completion.choices[0].message.content.trim();
-    
-    // Limpiar cualquier texto antes/después del JSON
-    const jsonMatch = respuesta.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { error: 'No pude entender el comando. ¿Puedes reformularlo?' };
-    }
-    
-    respuesta = jsonMatch[0];
-    const parsed = JSON.parse(respuesta);
-    
-    if (parsed.error) {
-      return { error: parsed.error };
-    }
-    
-    // Guardar comando pendiente de confirmación
-    const comandoId = `CMD-${Date.now()}`;
-    comandosPendientesConfirmacion.set(comandoId, {
-      userId,
-      chatId,
-      canal,
-      accion: parsed.accion,
-      parametros: parsed.parametros,
-      timestamp: Date.now()
-    });
-    
-    // Enviar mensaje de confirmación
-    const mensajeConfirmacion = `${parsed.confirmacion}\n\n✅ Responde *SI* para confirmar\n❌ Responde *NO* para cancelar\n✏️ O corrige lo que necesites (ej: "cambia 4:30 por 9am")`;
-    
-    return { confirmacion: mensajeConfirmacion, comandoId };
-    
-  } catch (error) {
-    console.error('❌ Error procesando comando con IA:', error.message);
-    return { error: 'No pude entender el comando. ¿Puedes reformularlo?' };
-  }
-}
-
 async function procesarRespuestaComando(mensaje, userId, chatId, canal) {
-  // Buscar si hay un comando pendiente para este usuario
   let comandoPendiente = null;
   let comandoId = null;
   
@@ -1699,16 +1614,16 @@ Usuario dice: "${mensaje}"
     
     let respuesta = completion.choices[0].message.content.trim();
     
-    // Extraer JSON válido
+    // 🔥 FIX CRÍTICO: Extraer JSON válido con regex
     const jsonMatch = respuesta.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
+      console.error('❌ No se encontró JSON en corrección:', respuesta);
       return 'No entendí la corrección. ¿Puedes ser más específico?';
     }
     
     respuesta = jsonMatch[0];
     const parsed = JSON.parse(respuesta);
     
-    // Actualizar parámetros
     comandoPendiente.parametros = parsed.parametros;
     comandosPendientesConfirmacion.set(comandoId, comandoPendiente);
     
