@@ -75,9 +75,25 @@ async function sendWithTyping(chat, message) {
 }
 
 // ========== WHATSAPP CLIENT ==========
-const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+const WWEBJS_EXECUTABLE = process.env.PUPPETEER_EXECUTABLE_PATH || '/usrin/chromium';
 
 const client = new Client({
+
+// ====== WhatsApp Slash Router (ensured) ======
+async function __slashRouter(body, userId, chatId) {
+  const clean = String(body || '').trim();
+  if (!clean.startsWith('/')) return false;
+  const parts = clean.replace(/\s+/g, ' ').split(' ');
+  const command = parts[0].slice(1).toLowerCase();
+  const args = parts.slice(1);
+  if (typeof handleCommand === 'function') {
+    const res = await handleCommand('/' + command, args, userId, chatId, 'whatsapp');
+    const chat = await client.getChatById(chatId);
+    const out = (typeof res === 'string') ? res : JSON.stringify(res, null, 2);
+    await sendWithTyping(chat, out);
+  }
+  return true;
+}
   authStrategy: new LocalAuth({ dataPath: path.join(DATA_DIR, 'session') }),
   puppeteer: {
     headless: true,
@@ -713,7 +729,7 @@ function sanitizarHTML(texto) {
     .replace(/>/g, '&gt;');
   
   textoLimpio = textoLimpio
-    .replace(/\*(.*?)\*/g, '<b>$1</b>')
+    .replace(/\*(.*?)\*/g, '<b>$1<>')
     .replace(/_(.*?)_/g, '<i>$1</i>');
   
   return textoLimpio;
@@ -730,7 +746,7 @@ async function enviarTelegram(mensaje, chatId = null) {
     
     const data = JSON.stringify({
       chat_id: targetChatId,
-      text: telegramMsg,
+      text: (typeof telegramMsg === 'string' ? telegramMsg : JSON.stringify(telegramMsg, null, 2)),
       parse_mode: 'HTML'
     });
     
@@ -738,7 +754,7 @@ async function enviarTelegram(mensaje, chatId = null) {
       const options = {
         hostname: 'api.telegram.org',
         port: 443,
-        path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        path: `ot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1052,7 +1068,26 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
   const respuestaComando = await procesarRespuestaComando(fullMessage, userId, chatId, canal);
   if (respuestaComando) return respuestaComando;
   
-  switch (command) {
+  switch (command) {case '/pausar':
+    {
+      const target = (args && args.length > 0) ? args.join(' ').trim() : '';
+      if (!target) {
+        comandosPendientesConfirmacion.clear();
+        comandosPendientesConfirmacion.set('PAUSAR-' + Date.now(), { userId, chatId, canal, accion: 'pausar', parametros: { target: chatId || userId } });
+        return '⏸️ Acción: *Pausar bot en este chat*\\n\\n✅ Responde *SI* para confirmar\\n❌ Responde *NO* para cancelar';
+      }
+      if (target.toLowerCase() === 'todo' || target.toLowerCase() === 'todos') {
+        comandosPendientesConfirmacion.clear();
+        comandosPendientesConfirmacion.set('PAUSAR-' + Date.now(), { userId, chatId, canal, accion: 'pausar', parametros: { target: 'todo' } });
+        return '⏸️ Acción: *Pausar bot en TODOS los chats*\\n\\n✅ Responde *SI* para confirmar\\n❌ Responde *NO* para cancelar';
+      }
+      // assume it's a phone/chat id
+      const normalized = target.endswith('@c.us') ? target : (target.replace(/[^0-9]/g, '') + '@c.us');
+      comandosPendientesConfirmacion.clear();
+      comandosPendientesConfirmacion.set('PAUSAR-' + Date.now(), { userId, chatId, canal, accion: 'pausar', parametros: { target: normalized } });
+      return `⏸️ Acción: *Pausar bot para* ${normalized}\\n\\n✅ Responde *SI* para confirmar\\n❌ Responde *NO* para cancelar`;
+    }
+
     case '/ayuda':
     case '/help':
       if (esOwner) {
@@ -1062,7 +1097,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
           `/pausar - Pausar bot en este chat\n` +
           `/iniciar - Reactivar bot\n\n` +
           `*Barberos:*\n` +
-          `/barberos - Lista de barberos\n` +
+          `arberos - Lista de barberos\n` +
           `/disponibilidad - Ver slots libres\n\n` +
           `*Citas:*\n` +
           `/vercitas - Todas las citas de hoy\n` +
@@ -1093,7 +1128,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
       if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
       return await procesarComandoConIA(command, fullMessage, userId, chatId, canal);
     
-    case '/barberos':
+    case 'arberos':
       let lista = '*👨‍🦲 BARBEROS*\n\n';
       for (const [nombreBarbero, data] of Object.entries(BARBEROS)) {
         const estado = obtenerEstadoBarbero(nombreBarbero);
@@ -1141,7 +1176,7 @@ async function testTelegramConnection() {
   const https = require('https');
   
   return new Promise((resolve, reject) => {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe`;
+    const url = `https://api.telegram.orgot${TELEGRAM_BOT_TOKEN}/getMe`;
     
     https.get(url, (res) => {
       let data = '';
@@ -1332,7 +1367,7 @@ async function iniciarTelegramBot() {
     isPolling = true;
     
     try {
-      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
+      const url = `https://api.telegram.orgot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${offset}&timeout=30`;
       
       const req = https.get(url, (res) => {
         let data = '';
@@ -1924,7 +1959,7 @@ app.get('/qr', async (req, res) => {
               <p style="margin-top: 10px; color: #ccc;">WhatsApp conectado correctamente</p>
             </div>
           </div>
-        </body></html>
+        <ody></html>
       `);
     }
     
@@ -1964,7 +1999,7 @@ app.get('/qr', async (req, res) => {
           <h2>⏳ Iniciando Bot...</h2>
           <p>Generando código QR...</p>
         </div>
-      </body></html>
+      <ody></html>
     `);
   }
 
@@ -2013,7 +2048,7 @@ app.get('/qr', async (req, res) => {
           </div>
           <p><small>La página se actualizará automáticamente</small></p>
         </div>
-      </body></html>
+      <ody></html>
     `);
   } catch (error) {
     res.status(500).send('Error generando QR');
