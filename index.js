@@ -2147,3 +2147,94 @@ client.on('ready', async () => {
     console.error('❌ Error inicializando WhatsApp:', e?.message || e);
   }
 })();
+
+
+
+/* ======== QR PAGE PATCH (id:qrpatch-v1) ======== */
+(function(){
+  try {
+    // Reuse existing app/client if present; otherwise try to create minimal ones
+    var _express = (typeof express !== 'undefined') ? express : require('express');
+    var _QRCode = (typeof QRCode !== 'undefined') ? QRCode : require('qrcode');
+    var _qrcodeTerminal = (typeof qrcode !== 'undefined') ? qrcode : require('qrcode-terminal');
+
+    if (typeof app === 'undefined') { global.app = _express(); }
+    if (typeof PORT === 'undefined') { global.PORT = process.env.PORT || 3000; }
+    if (typeof client === 'undefined') {
+      const { Client, LocalAuth } = require('whatsapp-web.js');
+      global.client = new Client({ authStrategy: new LocalAuth() });
+      client.initialize();
+    }
+
+    if (typeof global.lastQr === 'undefined') global.lastQr = null;
+
+    // Remove prior GET '/' routes so our handler takes precedence
+    try {
+      if (app && app._router && Array.isArray(app._router.stack)) {
+        app._router.stack = app._router.stack.filter(layer => {
+          return !(layer && layer.route && layer.route.path === '/' && layer.route.methods && layer.route.methods.get);
+        });
+      }
+    } catch (e) { /* ignore */ }
+
+    // Our root page
+    app.get('/', function(req, res){
+      if (global.lastQr) {
+        res.send(`
+          <html>
+            <head><title>Cortex Bot QR</title></head>
+            <body style="font-family:sans-serif;text-align:center;margin-top:40px;">
+              <h2>📱 Escanea este QR para vincular tu WhatsApp</h2>
+              <img src="${global.lastQr}" style="width:300px;margin-top:20px;border:1px solid #ccc;border-radius:12px;" />
+              <p style="margin-top:30px;color:gray;">Si ya lo escaneaste, espera a que se conecte…</p>
+            </body>
+          </html>
+        `);
+      } else {
+        res.send('✅ Cortex Barbershop Bot is running! 💈<br><br>No hay QR disponible todavía.');
+      }
+    });
+
+    // Optional direct QR route
+    app.get('/qr', function(req, res){
+      if (global.lastQr) res.redirect(global.lastQr);
+      else res.send('No hay QR disponible todavía.');
+    });
+
+    // Hook WhatsApp QR events (avoid double-binding)
+    if (!client.__qrpatch_bound) {
+      client.on('qr', async (qr) => {
+        try {
+          console.log('📸 [qrpatch] Nuevo QR generado');
+          if (_qrcodeTerminal && _qrcodeTerminal.generate) {
+            _qrcodeTerminal.generate(qr, { small: true });
+          }
+          if (_QRCode && _QRCode.toDataURL) {
+            global.lastQr = await _QRCode.toDataURL(qr);
+          } else {
+            global.lastQr = null;
+          }
+        } catch (err) {
+          console.error('❌ [qrpatch] Error generando DataURL QR:', err);
+          global.lastQr = null;
+        }
+      });
+      client.on('ready', () => {
+        console.log('✅ [qrpatch] WhatsApp conectado, ocultando QR');
+        global.lastQr = null;
+      });
+      client.__qrpatch_bound = true;
+    }
+
+    // Ensure server is listening
+    if (!app.__qrpatch_listening) {
+      app.listen(PORT, () => {
+        console.log(`🌐 [qrpatch] QR page disponible en puerto ${PORT}`);
+      });
+      app.__qrpatch_listening = true;
+    }
+  } catch (err) {
+    console.error('❌ [qrpatch] Error inicializando QR patch:', err);
+  }
+})();
+/* ======== END QR PAGE PATCH ======== */
