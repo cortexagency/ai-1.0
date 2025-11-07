@@ -1,11 +1,12 @@
 // =========================
-// CORTEX IA - BARBERSHOP BOT - VERSIÓN FINAL V5.1 FIXED
+// CORTEX IA - BARBERSHOP BOT - VERSIÓN FINAL V5.2 ULTRA FIXED
 // FIXES APLICADOS:
-// ✅ Error "handleCommandTelegram is not defined" ELIMINADO
-// ✅ Parser de comandos mejorado (maneja múltiples espacios)
-// ✅ Comandos funcionan en Telegram y WhatsApp
-// ✅ Sistema de pausas arreglado
-// ✅ Detección de barbero específico mejorada
+// ✅ Sintaxis corregida (línea 1734 fixed)
+// ✅ handleCommandTelegram eliminado (unificado en handleCommand)
+// ✅ Parser de comandos mejorado
+// ✅ Todos los comandos funcionan
+// ✅ Sistema de pausas funcional
+// ✅ Detección de roles mejorada
 // =========================
 require('dotenv').config();
 
@@ -1120,13 +1121,11 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
     
     case '/pausar':
       if (!esOwner) return 'Solo el dueño puede pausar el bot.';
-      const fullCmd = `${command} ${args.join(' ')}`.trim();
-      return await procesarComandoConIA(command, fullCmd, userId, chatId, canal);
+      return await procesarComandoConIA(command, fullMessage, userId, chatId, canal);
     
     case '/iniciar':
       if (!esOwner) return 'Solo el dueño puede iniciar el bot.';
-      const fullCmdIniciar = `${command} ${args.join(' ')}`.trim();
-      return await procesarComandoConIA(command, fullCmdIniciar, userId, chatId, canal);
+      return await procesarComandoConIA(command, fullMessage, userId, chatId, canal);
     
     case '/barberos':
       let lista = '*👨‍🦲 BARBEROS*\n\n';
@@ -1238,8 +1237,7 @@ async function handleCommand(command, args, userId, chatId, canal = 'whatsapp') 
     case '/pasar':
     case '/salir':
       if (!esOwner && !esBarbero) return 'No tienes permiso para usar este comando.';
-      const fullMessage2 = `${command} ${args.join(' ')}`.trim();
-      return await procesarComandoConIA(command, fullMessage2, userId, chatId, canal);
+      return await procesarComandoConIA(command, fullMessage, userId, chatId, canal);
     
     default:
       return `❓ Comando no reconocido. Usa /ayuda para ver los comandos disponibles.`;
@@ -1334,7 +1332,7 @@ async function handleMensajeBarberoTelegram(mensaje, nombreBarbero, chatId) {
           `💇 ${resultado.cita.servicio}\n` +
           `📅 ${fechaLegible}\n` +
           `🕐 ${resultado.cita.hora_inicio}\n\n` +
-          `¡Te esperamos! 👈`
+          `¡Te esperamos! 💈`
         );
       } catch (e) {
         console.error('Error notificando cliente:', e);
@@ -1388,350 +1386,6 @@ async function handleMensajeBarberoTelegram(mensaje, nombreBarbero, chatId) {
       const clientChat = await client.getChatById(solicitud.clienteChatId);
       await sendWithTyping(clientChat,
         `${nombreBarbero} sugiere mejor a las *${horaSugerida}* para tu ${solicitud.datos.servicio}.\n\n` +
-        `¿Te sirve ese horario?`
-      );
-    } catch (e) {
-      console.error('Error notificando cliente:', e);
-    }
-    
-    return true;
-  }
-  
-  console.log(`   ℹ️ Respuesta no reconocida, continuando con flujo normal`);
-  return false;
-}
-
-// ========== EXPRESS SERVER ==========
-const app = express();
-app.use(express.json());
-
-let latestQR = null;
-
-app.get('/', (req, res) => res.send('✅ Cortex Barbershop Bot is running! 👈'));
-
-app.get('/qr', async (req, res) => {
-  if (!latestQR) {
-    const isAuthenticated = client && client.info && client.info.wid;
-    
-    if (isAuthenticated) {
-      return res.send(`
-        <!DOCTYPE html><html><head>
-          <title>Cortex Barbershop Bot - Conectado</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body {
-              font-family: Arial, sans-serif;
-              background: #1a1a1a;
-              color: #fff;
-              padding: 20px;
-              margin: 0;
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              justify-content: center;
-              min-height: 100vh;
-            }
-            .container { text-align: center; max-width: 500px; }
-            h1 { color: #00ff00; margin-bottom: 20px; font-size: 28px; }
-            .status {
-              background: rgba(0, 255, 0, 0.1);
-              border: 2px solid #00ff00;
-              padding: 30px;
-              border-radius: 15px;
-              margin: 20px 0;
-            }
-            .checkmark {
-              font-size: 64px;
-              color: #00ff00;
-              margin-bottom: 20px;
-            }
-          </style>
-        </head><body>
-          <div class="container">
-            <h1>✅ CORTEX BARBERSHOP BOT</h1>
-            <div class="status">
-              <div class="checkmark">✓</div>
-              <h2 style="color: #00ff00; margin: 0;">Sesión Activa</h2>
-              <p style="margin-top: 10px; color: #ccc;">WhatsApp conectado correctamente</p>
-            </div>
-          </div>
-        </body></html>
-      `);
-    }
-    
-    return res.send(`
-      <!DOCTYPE html><html><head>
-        <title>Cortex Barbershop Bot - Iniciando</title>
-        <meta http-equiv="refresh" content="3">
-        <style>
-          body {
-            font-family: monospace;
-            background: #000;
-            color: #0f0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            text-align: center;
-            padding: 20px;
-          }
-          .spinner {
-            border: 4px solid rgba(0, 255, 0, 0.1);
-            border-top: 4px solid #0f0;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 20px auto;
-          }
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        </style>
-      </head><body>
-        <div>
-          <div class="spinner"></div>
-          <h2>⏳ Iniciando Bot...</h2>
-          <p>Generando código QR...</p>
-        </div>
-      </body></html>
-    `);
-  }
-
-  try {
-    const qrSVG = await QRCode.toString(latestQR, { 
-      type: 'svg', 
-      width: 400, 
-      margin: 2 
-    });
-    
-    res.send(`
-      <!DOCTYPE html><html><head>
-        <title>Cortex Barbershop Bot - Escanea QR</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="refresh" content="15">
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            background: #1a1a1a;
-            color: #fff;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-          }
-          .container {
-            text-align: center;
-            max-width: 500px;
-          }
-          h1 { color: #00ff00; }
-          .qr-container {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            display: inline-block;
-            margin: 20px 0;
-          }
-        </style>
-      </head><body>
-        <div class="container">
-          <h1>👈 Cortex Barbershop Bot</h1>
-          <p>Escanea el QR con WhatsApp:</p>
-          <div class="qr-container">
-            ${qrSVG}
-          </div>
-          <p><small>La página se actualizará automáticamente</small></p>
-        </div>
-      </body></html>
-    `);
-  } catch (error) {
-    res.status(500).send('Error generando QR');
-  }
-});
-
-app.get('/api/citas', async (req, res) => {
-  const { fecha, barbero } = req.query;
-  let citas = CITAS.filter(c => c.estado !== 'cancelada');
-  
-  if (fecha) {
-    citas = citas.filter(c => c.fecha === fecha);
-  }
-  
-  if (barbero) {
-    citas = citas.filter(c => c.barbero === barbero);
-  }
-  
-  res.json(citas);
-});
-
-app.get('/api/stats', async (req, res) => {
-  const hoy = now().toFormat('yyyy-MM-dd');
-  const mesActual = now().toFormat('yyyy-MM');
-  
-  const citasHoy = CITAS.filter(c => c.fecha === hoy && c.estado !== 'cancelada');
-  const citasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado !== 'cancelada');
-  const canceladasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado === 'cancelada');
-  
-  const serviciosCount = {};
-  for (const cita of citasMes) {
-    serviciosCount[cita.servicio] = (serviciosCount[cita.servicio] || 0) + 1;
-  }
-  const serviciosMasPedidos = Object.entries(serviciosCount)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([servicio, count]) => ({ servicio, count }));
-  
-  const clientesUnicos = new Set(citasMes.map(c => c.telefono));
-  const clientesNuevos = Array.from(clientesUnicos).filter(tel => {
-    const cliente = CLIENTES[tel];
-    return cliente && cliente.totalCitas === 1;
-  }).length;
-  const clientesRecurrentes = clientesUnicos.size - clientesNuevos;
-  
-  res.json({
-    citasHoy: citasHoy.length,
-    citasMes: citasMes.length,
-    canceladasMes: canceladasMes.length,
-    serviciosMasPedidos,
-    clientesNuevos,
-    clientesRecurrentes,
-    totalClientes: Object.keys(CLIENTES).length
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`🌐 Servidor Express corriendo en puerto ${PORT}`);
-});
-
-// ========== WHATSAPP EVENTS ==========
-client.on('qr', (qr) => {
-  console.log('📱 Código QR generado!');
-  console.log('🌐 Abre este link para escanear:');
-  console.log(`\n   📲 http://localhost:${PORT}/qr\n`);
-  latestQR = qr;
-  qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', async () => {
-  console.log('✅ Cliente de WhatsApp listo!');
-  console.log(`👤 Notificaciones al dueño: ${OWNER_NUMBER}`);
-  latestQR = null;
-  
-  await initDataFiles();
-  await cargarConfigBarberia();
-  
-  if (TELEGRAM_ENABLED) {
-    await iniciarTelegramBot();
-  }
-  
-  console.log('📋 Estado del sistema:');
-  console.log(`  - Barbería: ${BARBERIA_CONFIG?.negocio?.nombre || '❌'}`);
-  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}`);
-  console.log(`  - Barberos: ${Object.keys(BARBEROS).length}`);
-  console.log(`  - Citas activas: ${CITAS.filter(c => c.estado !== 'cancelada').length}`);
-  console.log(`  - Telegram Bot: ${TELEGRAM_ENABLED ? '✅ ACTIVO' : '❌ INACTIVO'}`);
-});
-
-client.on('message', async (message) => {
-  try {
-    if (message.from.includes('@g.us') || message.fromMe) return;
-    
-    const userId = message.from;
-    let userMessage = (message.body || '').trim();
-    
-    // Manejar mensajes de voz
-    if (message.hasMedia && (message.type === 'ptt' || message.type === 'audio')) {
-      console.log('🎤 Mensaje de voz detectado, transcribiendo...');
-      
-      const chat = await message.getChat();
-      await chat.sendStateTyping();
-      
-      userMessage = await transcribirAudio(message);
-      
-      if (!userMessage) {
-        await message.reply('Disculpa, no pude entender el audio. ¿Podrías escribir tu mensaje o enviar el audio de nuevo?');
-        return;
-      }
-      
-      console.log(`🎤 Audio transcrito: "${userMessage}"`);
-    }
-    
-    if (!userMessage) return;
-    
-    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
-    
-    // Verificar si es un barbero
-    const { rol, nombre } = detectarRol(userId, null);
-    
-    if (rol === 'barbero') {
-      console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombre}`);
-      
-      const procesado = await handleMensajeBarbero(message, nombre);
-      
-      if (procesado) {
-        console.log(`✅ Respuesta de barbero procesada exitosamente`);
-        return;
-      }
-      
-      console.log(`   ℹ️ No era una respuesta a solicitud, continuando con flujo normal`);
-    }
-    
-    const respuesta = await chatWithAI(userMessage, userId, message.from);
-    
-    if (respuesta) {
-      await humanDelay();
-      await message.reply(respuesta);
-    }
-    
-  } catch (e) {
-    console.error('❌ Error procesando mensaje:', e.message);
-    try {
-      await notificarDueno(
-        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
-        message.from
-      );
-    } catch (notifyError) {
-      console.error('❌ Error notificando sobre error:', notifyError.message);
-    }
-  }
-});
-
-client.on('disconnected', (r) => { 
-  console.log('❌ Cliente desconectado:', r); 
-  latestQR = null;
-});
-
-client.on('auth_failure', (msg) => {
-  console.error('❌ Fallo de autenticación:', msg);
-  latestQR = null;
-});
-
-// ========== START ==========
-console.log('🚀 Iniciando Cortex Barbershop Bot V5.1...');
-console.log('🕐 Timezone:', TIMEZONE);
-console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
-console.log(`👤 Dueño: ${OWNER_NUMBER}`);
-console.log('');
-console.log('🎯 VERSIÓN V5.1 - FIXES APLICADOS:');
-console.log('  ✅ Error "handleCommandTelegram is not defined" ELIMINADO');
-console.log('  ✅ Parser de comandos mejorado (espacios múltiples)');
-console.log('  ✅ Comandos funcionan en Telegram y WhatsApp');
-console.log('  ✅ Sistema de pausas completamente funcional');
-console.log('  ✅ Detección de roles mejorada');
-console.log('  ✅ Confirmaciones inteligentes con IA');
-console.log('');
-client.initialize();
-
-// ========== GLOBAL ERRORS ==========
-process.on('unhandledRejection', (e) => {
-  console.error('❌ UNHANDLED REJECTION:', e);
-});
-
-process.on('uncaughtException', (e) => {
-  console.error('❌ UNCAUGHT EXCEPTION:', e);
-});itud.datos.servicio}.\n\n` +
         `¿Te sirve ese horario?`
       );
     } catch (e) {
@@ -2299,7 +1953,7 @@ async function handleMensajeBarbero(message, nombreBarbero) {
           `💇 ${resultado.cita.servicio}\n` +
           `📅 ${fechaLegible}\n` +
           `🕐 ${resultado.cita.hora_inicio}\n\n` +
-          `¡Te esperamos! 👈`
+          `¡Te esperamos! 💈`
         );
       } catch (e) {
         console.error('Error notificando cliente:', e);
@@ -2350,5 +2004,348 @@ async function handleMensajeBarbero(message, nombreBarbero) {
     try {
       const clientChat = await client.getChatById(solicitud.clienteChatId);
       await sendWithTyping(clientChat,
-        `${nombreBarbero} sugiere mejor a las *${horaSugerida}* para tu ${solic
-          `
+        `${nombreBarbero} sugiere mejor a las *${horaSugerida}* para tu ${solicitud.datos.servicio}.\n\n` +
+        `¿Te sirve ese horario?`
+      );
+    } catch (e) {
+      console.error('Error notificando cliente:', e);
+    }
+    
+    return true;
+  }
+  
+  console.log(`   ℹ️ Respuesta no reconocida, continuando con flujo normal`);
+  return false;
+}
+
+// ========== EXPRESS SERVER ==========
+const app = express();
+app.use(express.json());
+
+let latestQR = null;
+
+app.get('/', (req, res) => res.send('✅ Cortex Barbershop Bot is running! 💈'));
+
+app.get('/qr', async (req, res) => {
+  if (!latestQR) {
+    const isAuthenticated = client && client.info && client.info.wid;
+    
+    if (isAuthenticated) {
+      return res.send(`
+        <!DOCTYPE html><html><head>
+          <title>Cortex Barbershop Bot - Conectado</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              background: #1a1a1a;
+              color: #fff;
+              padding: 20px;
+              margin: 0;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+            }
+            .container { text-align: center; max-width: 500px; }
+            h1 { color: #00ff00; margin-bottom: 20px; font-size: 28px; }
+            .status {
+              background: rgba(0, 255, 0, 0.1);
+              border: 2px solid #00ff00;
+              padding: 30px;
+              border-radius: 15px;
+              margin: 20px 0;
+            }
+            .checkmark {
+              font-size: 64px;
+              color: #00ff00;
+              margin-bottom: 20px;
+            }
+          </style>
+        </head><body>
+          <div class="container">
+            <h1>✅ CORTEX BARBERSHOP BOT</h1>
+            <div class="status">
+              <div class="checkmark">✓</div>
+              <h2 style="color: #00ff00; margin: 0;">Sesión Activa</h2>
+              <p style="margin-top: 10px; color: #ccc;">WhatsApp conectado correctamente</p>
+            </div>
+          </div>
+        </body></html>
+      `);
+    }
+    
+    return res.send(`
+      <!DOCTYPE html><html><head>
+        <title>Cortex Barbershop Bot - Iniciando</title>
+        <meta http-equiv="refresh" content="3">
+        <style>
+          body {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            text-align: center;
+            padding: 20px;
+          }
+          .spinner {
+            border: 4px solid rgba(0, 255, 0, 0.1);
+            border-top: 4px solid #0f0;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        </style>
+      </head><body>
+        <div>
+          <div class="spinner"></div>
+          <h2>⏳ Iniciando Bot...</h2>
+          <p>Generando código QR...</p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  try {
+    const qrSVG = await QRCode.toString(latestQR, { 
+      type: 'svg', 
+      width: 400, 
+      margin: 2 
+    });
+    
+    res.send(`
+      <!DOCTYPE html><html><head>
+        <title>Cortex Barbershop Bot - Escanea QR</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="15">
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+          }
+          .container {
+            text-align: center;
+            max-width: 500px;
+          }
+          h1 { color: #00ff00; }
+          .qr-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            display: inline-block;
+            margin: 20px 0;
+          }
+        </style>
+      </head><body>
+        <div class="container">
+          <h1>💈 Cortex Barbershop Bot</h1>
+          <p>Escanea el QR con WhatsApp:</p>
+          <div class="qr-container">
+            ${qrSVG}
+          </div>
+          <p><small>La página se actualizará automáticamente</small></p>
+        </div>
+      </body></html>
+    `);
+  } catch (error) {
+    res.status(500).send('Error generando QR');
+  }
+});
+
+app.get('/api/citas', async (req, res) => {
+  const { fecha, barbero } = req.query;
+  let citas = CITAS.filter(c => c.estado !== 'cancelada');
+  
+  if (fecha) {
+    citas = citas.filter(c => c.fecha === fecha);
+  }
+  
+  if (barbero) {
+    citas = citas.filter(c => c.barbero === barbero);
+  }
+  
+  res.json(citas);
+});
+
+app.get('/api/stats', async (req, res) => {
+  const hoy = now().toFormat('yyyy-MM-dd');
+  const mesActual = now().toFormat('yyyy-MM');
+  
+  const citasHoy = CITAS.filter(c => c.fecha === hoy && c.estado !== 'cancelada');
+  const citasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado !== 'cancelada');
+  const canceladasMes = CITAS.filter(c => c.fecha.startsWith(mesActual) && c.estado === 'cancelada');
+  
+  const serviciosCount = {};
+  for (const cita of citasMes) {
+    serviciosCount[cita.servicio] = (serviciosCount[cita.servicio] || 0) + 1;
+  }
+  const serviciosMasPedidos = Object.entries(serviciosCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([servicio, count]) => ({ servicio, count }));
+  
+  const clientesUnicos = new Set(citasMes.map(c => c.telefono));
+  const clientesNuevos = Array.from(clientesUnicos).filter(tel => {
+    const cliente = CLIENTES[tel];
+    return cliente && cliente.totalCitas === 1;
+  }).length;
+  const clientesRecurrentes = clientesUnicos.size - clientesNuevos;
+  
+  res.json({
+    citasHoy: citasHoy.length,
+    citasMes: citasMes.length,
+    canceladasMes: canceladasMes.length,
+    serviciosMasPedidos,
+    clientesNuevos,
+    clientesRecurrentes,
+    totalClientes: Object.keys(CLIENTES).length
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor Express corriendo en puerto ${PORT}`);
+});
+
+// ========== WHATSAPP EVENTS ==========
+client.on('qr', (qr) => {
+  console.log('📱 Código QR generado!');
+  console.log('🌐 Abre este link para escanear:');
+  console.log(`\n   📲 http://localhost:${PORT}/qr\n`);
+  latestQR = qr;
+  qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', async () => {
+  console.log('✅ Cliente de WhatsApp listo!');
+  console.log(`👤 Notificaciones al dueño: ${OWNER_NUMBER}`);
+  latestQR = null;
+  
+  await initDataFiles();
+  await cargarConfigBarberia();
+  
+  if (TELEGRAM_ENABLED) {
+    await iniciarTelegramBot();
+  }
+  
+  console.log('📋 Estado del sistema:');
+  console.log(`  - Barbería: ${BARBERIA_CONFIG?.negocio?.nombre || '❌'}`);
+  console.log(`  - Servicios: ${Object.keys(BARBERIA_CONFIG?.servicios || {}).length}`);
+  console.log(`  - Barberos: ${Object.keys(BARBEROS).length}`);
+  console.log(`  - Citas activas: ${CITAS.filter(c => c.estado !== 'cancelada').length}`);
+  console.log(`  - Telegram Bot: ${TELEGRAM_ENABLED ? '✅ ACTIVO' : '❌ INACTIVO'}`);
+});
+
+client.on('message', async (message) => {
+  try {
+    if (message.from.includes('@g.us') || message.fromMe) return;
+    
+    const userId = message.from;
+    let userMessage = (message.body || '').trim();
+    
+    // Manejar mensajes de voz
+    if (message.hasMedia && (message.type === 'ptt' || message.type === 'audio')) {
+      console.log('🎤 Mensaje de voz detectado, transcribiendo...');
+      
+      const chat = await message.getChat();
+      await chat.sendStateTyping();
+      
+      userMessage = await transcribirAudio(message);
+      
+      if (!userMessage) {
+        await message.reply('Disculpa, no pude entender el audio. ¿Podrías escribir tu mensaje o enviar el audio de nuevo?');
+        return;
+      }
+      
+      console.log(`🎤 Audio transcrito: "${userMessage}"`);
+    }
+    
+    if (!userMessage) return;
+    
+    console.log(`📩 Mensaje de ${userId}: ${userMessage}`);
+    
+    // Verificar si es un barbero
+    const { rol, nombre } = detectarRol(userId, null);
+    
+    if (rol === 'barbero') {
+      console.log(`👨‍🦲 Mensaje de barbero detectado: ${nombre}`);
+      
+      const procesado = await handleMensajeBarbero(message, nombre);
+      
+      if (procesado) {
+        console.log(`✅ Respuesta de barbero procesada exitosamente`);
+        return;
+      }
+      
+      console.log(`   ℹ️ No era una respuesta a solicitud, continuando con flujo normal`);
+    }
+    
+    const respuesta = await chatWithAI(userMessage, userId, message.from);
+    
+    if (respuesta) {
+      await humanDelay();
+      await message.reply(respuesta);
+    }
+    
+  } catch (e) {
+    console.error('❌ Error procesando mensaje:', e.message);
+    try {
+      await notificarDueno(
+        `❌ *ERROR HANDLER*\nUsuario: ${message.from}\nError: ${e.message}`,
+        message.from
+      );
+    } catch (notifyError) {
+      console.error('❌ Error notificando sobre error:', notifyError.message);
+    }
+  }
+});
+
+client.on('disconnected', (r) => { 
+  console.log('❌ Cliente desconectado:', r); 
+  latestQR = null;
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('❌ Fallo de autenticación:', msg);
+  latestQR = null;
+});
+
+// ========== START ==========
+console.log('🚀 Iniciando Cortex Barbershop Bot V5.2...');
+console.log('🕐 Timezone:', TIMEZONE);
+console.log('🕐 Hora actual:', now().toFormat('yyyy-MM-dd HH:mm:ss'));
+console.log(`👤 Dueño: ${OWNER_NUMBER}`);
+console.log('');
+console.log('🎯 VERSIÓN V5.2 - ULTRA FIXED:');
+console.log('  ✅ Error de sintaxis línea 1734 CORREGIDO');
+console.log('  ✅ Todos los comandos funcionan correctamente');
+console.log('  ✅ Parser de comandos mejorado (espacios múltiples)');
+console.log('  ✅ Sistema de pausas completamente funcional');
+console.log('  ✅ Detección de roles mejorada');
+console.log('  ✅ Confirmaciones inteligentes con IA');
+console.log('');
+client.initialize();
+
+// ========== GLOBAL ERRORS ==========
+process.on('unhandledRejection', (e) => {
+  console.error('❌ UNHANDLED REJECTION:', e);
+});
+
+process.on('uncaughtException', (e) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', e);
+});
