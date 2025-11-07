@@ -2109,132 +2109,194 @@ app.get('/api/stats', async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🌐 Servidor Express corriendo en puerto ${PORT}`);
-});
 
-// ========== WHATSAPP EVENTS ==========
-client.on('qr', (qr) => {
-  console.log('📱 Código QR generado!');
-  console.log('🌐 Abre este link para escanear:');
-  console.log(`\n   📲 http://localhost:${PORT}/qr\n`);
-  latestQR = qr;
+// ========== QR CODE WEB DISPLAY ==========
+let lastQr = null;
+
+// Hook QR generation
+client.on('qr', async (qr) => {
+  console.log('📸 Nuevo QR generado – escanéalo con WhatsApp');
   qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', async () => {
-  console.log('✅ Cliente de WhatsApp listo!');
-  console.log(`👤 Notificaciones al dueño: ${OWNER_NUMBER}`);
-  latestQR = null;
-  
-  await initDataFiles();
-  await cargarConfigBarberia();
-  
-  if (TELEGRAM_ENABLED) {
-    await iniciarTelegramBot();
-  }
-  
-  console.log('📋 Estado del sistema:');
-  // (Opcional) aquí podrías imprimir estado de barberos, citas, etc.
-});
-
-// ====== Startup bootstrap (injected) ======
-(async () => {
   try {
-    await client.initialize();
-    console.log('🚀 Inicialización de WhatsApp solicitada');
-  } catch (e) {
-    console.error('❌ Error inicializando WhatsApp:', e?.message || e);
-  }
-})();
-
-
-
-/* ======== QR PAGE PATCH (id:qrpatch-v1) ======== */
-(function(){
-  try {
-    // Reuse existing app/client if present; otherwise try to create minimal ones
-    var _express = (typeof express !== 'undefined') ? express : require('express');
-    var _QRCode = (typeof QRCode !== 'undefined') ? QRCode : require('qrcode');
-    var _qrcodeTerminal = (typeof qrcode !== 'undefined') ? qrcode : require('qrcode-terminal');
-
-    if (typeof app === 'undefined') { global.app = _express(); }
-    if (typeof PORT === 'undefined') { global.PORT = process.env.PORT || 3000; }
-    if (typeof client === 'undefined') {
-      const { Client, LocalAuth } = require('whatsapp-web.js');
-      global.client = new Client({ authStrategy: new LocalAuth() });
-      client.initialize();
-    }
-
-    if (typeof global.lastQr === 'undefined') global.lastQr = null;
-
-    // Remove prior GET '/' routes so our handler takes precedence
-    try {
-      if (app && app._router && Array.isArray(app._router.stack)) {
-        app._router.stack = app._router.stack.filter(layer => {
-          return !(layer && layer.route && layer.route.path === '/' && layer.route.methods && layer.route.methods.get);
-        });
-      }
-    } catch (e) { /* ignore */ }
-
-    // Our root page
-    app.get('/', function(req, res){
-      if (global.lastQr) {
-        res.send(`
-          <html>
-            <head><title>Cortex Bot QR</title></head>
-            <body style="font-family:sans-serif;text-align:center;margin-top:40px;">
-              <h2>📱 Escanea este QR para vincular tu WhatsApp</h2>
-              <img src="${global.lastQr}" style="width:300px;margin-top:20px;border:1px solid #ccc;border-radius:12px;" />
-              <p style="margin-top:30px;color:gray;">Si ya lo escaneaste, espera a que se conecte…</p>
-            </body>
-          </html>
-        `);
-      } else {
-        res.send('✅ Cortex Barbershop Bot is running! 💈<br><br>No hay QR disponible todavía.');
-      }
-    });
-
-    // Optional direct QR route
-    app.get('/qr', function(req, res){
-      if (global.lastQr) res.redirect(global.lastQr);
-      else res.send('No hay QR disponible todavía.');
-    });
-
-    // Hook WhatsApp QR events (avoid double-binding)
-    if (!client.__qrpatch_bound) {
-      client.on('qr', async (qr) => {
-        try {
-          console.log('📸 [qrpatch] Nuevo QR generado');
-          if (_qrcodeTerminal && _qrcodeTerminal.generate) {
-            _qrcodeTerminal.generate(qr, { small: true });
-          }
-          if (_QRCode && _QRCode.toDataURL) {
-            global.lastQr = await _QRCode.toDataURL(qr);
-          } else {
-            global.lastQr = null;
-          }
-        } catch (err) {
-          console.error('❌ [qrpatch] Error generando DataURL QR:', err);
-          global.lastQr = null;
-        }
-      });
-      client.on('ready', () => {
-        console.log('✅ [qrpatch] WhatsApp conectado, ocultando QR');
-        global.lastQr = null;
-      });
-      client.__qrpatch_bound = true;
-    }
-
-    // Ensure server is listening
-    if (!app.__qrpatch_listening) {
-      app.listen(PORT, () => {
-        console.log(`🌐 [qrpatch] QR page disponible en puerto ${PORT}`);
-      });
-      app.__qrpatch_listening = true;
-    }
+    lastQr = await QRCode.toDataURL(qr);
   } catch (err) {
-    console.error('❌ [qrpatch] Error inicializando QR patch:', err);
+    console.error('❌ Error generando DataURL QR:', err);
+    lastQr = null;
   }
-})();
-/* ======== END QR PAGE PATCH ======== */
+});
+
+client.on('ready', () => {
+  console.log('✅ WhatsApp conectado correctamente!');
+  lastQr = null;
+});
+
+// Express route for QR display
+app.get('/', (req, res) => {
+  if (lastQr) {
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cortex Bot QR</title>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              text-align: center;
+              margin: 0;
+              padding: 40px 20px;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            .container {
+              background: white;
+              border-radius: 20px;
+              padding: 40px;
+              box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+              max-width: 500px;
+            }
+            h2 {
+              color: #333;
+              margin: 0 0 20px 0;
+              font-size: 24px;
+            }
+            .qr-container {
+              margin: 30px 0;
+              padding: 20px;
+              background: #f8f9fa;
+              border-radius: 15px;
+            }
+            img {
+              width: 280px;
+              height: 280px;
+              border: 3px solid #667eea;
+              border-radius: 15px;
+            }
+            .instructions {
+              color: #666;
+              margin-top: 20px;
+              line-height: 1.6;
+            }
+            .emoji {
+              font-size: 32px;
+              margin-bottom: 10px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="emoji">📱</div>
+            <h2>Escanea el QR para vincular WhatsApp</h2>
+            <div class="qr-container">
+              <img src="${lastQr}" alt="WhatsApp QR Code" />
+            </div>
+            <div class="instructions">
+              <p><strong>Pasos:</strong></p>
+              <p>1. Abre WhatsApp en tu teléfono<br>
+              2. Ve a Configuración → Dispositivos vinculados<br>
+              3. Toca "Vincular un dispositivo"<br>
+              4. Escanea este código QR</p>
+              <p style="margin-top:20px;color:#999;font-size:14px;">La página se actualizará automáticamente cuando conectes</p>
+            </div>
+          </div>
+          <script>
+            // Auto-refresh every 5 seconds to check connection status
+            setTimeout(() => location.reload(), 5000);
+          </script>
+        </body>
+      </html>
+    `);
+  } else {
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cortex Bot</title>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              text-align: center;
+              margin: 0;
+              padding: 40px 20px;
+              background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+              min-height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            .container {
+              background: white;
+              border-radius: 20px;
+              padding: 60px 40px;
+              box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+              max-width: 500px;
+            }
+            .emoji {
+              font-size: 64px;
+              margin-bottom: 20px;
+            }
+            h1 {
+              color: #11998e;
+              margin: 0 0 15px 0;
+              font-size: 32px;
+            }
+            p {
+              color: #666;
+              font-size: 18px;
+              margin: 10px 0;
+            }
+            .status {
+              display: inline-block;
+              background: #11998e;
+              color: white;
+              padding: 10px 20px;
+              border-radius: 20px;
+              margin-top: 20px;
+              font-weight: bold;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="emoji">💈</div>
+            <h1>Cortex Barbershop Bot</h1>
+            <p>El bot está funcionando correctamente</p>
+            <div class="status">✅ ONLINE</div>
+            <p style="margin-top:30px;font-size:14px;color:#999;">
+              WhatsApp conectado y listo para atender clientes
+            </p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+});
+
+app.get('/qr', (req, res) => {
+  if (lastQr) {
+    res.redirect(lastQr);
+  } else {
+    res.send('No hay QR disponible. El bot ya está conectado o aún no se ha generado el código.');
+  }
+});
+
+app.get('/status', (req, res) => {
+  res.json({
+    status: lastQr ? 'waiting_for_scan' : 'connected',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Start Express server
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor web corriendo en puerto ${PORT}`);
+  console.log(`📱 Accede a: https://ai-10-production.up.railway.app/`);
+});
+
+// ========== END OF FILE ==========
