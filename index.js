@@ -20,6 +20,54 @@ let OWNER_CHAT_ID = process.env.OWNER_WHATSAPP_ID || `${OWNER_NUMBER}@c.us`;
 
 // ========== TELEGRAM CONFIGURATION ==========
 const TELEGRAM_ENABLED = process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID;
+
+// ====== Telegraf Command Bridge (injected) ======
+let __telegrafBridge = null;
+try {
+  if (TELEGRAM_ENABLED) {
+    const { Telegraf } = require('telegraf');
+    __telegrafBridge = new Telegraf(TELEGRAM_BOT_TOKEN);
+    console.log('📲 Telegraf bridge: ON');
+
+    function __normalizeCommand(text) {
+      return text.replace(/\s+/g, ' ').trim();
+    }
+
+    __telegrafBridge.on('text', async (ctx) => {
+      try {
+        const chatId = String(ctx.chat.id);
+        const text = (ctx.message?.text || '').trim();
+        if (!text.startsWith('/')) return;
+
+        const clean = __normalizeCommand(text);
+        const parts = clean.split(' ');
+        const command = parts[0].toLowerCase().replace(/^\//, '');
+        const args = parts.slice(1);
+
+        const userId = TELEGRAM_CHAT_ID; // treat owner chat as privileged
+
+        if (typeof handleCommand === 'function') {
+          await handleCommand(command, args, userId, chatId, 'telegram');
+        } else if (typeof handleCommandTelegram === 'function') {
+          await handleCommandTelegram(command, args, chatId, 'owner');
+        } else {
+          await ctx.reply('⚠️ No hay handler de comandos disponible.');
+        }
+      } catch (err) {
+        console.error('❌ Error en Telegraf bridge:', err?.message || err);
+        try { await ctx.reply('⚠️ Error procesando el comando.'); } catch(e) {}
+      }
+    });
+
+    __telegrafBridge.launch()
+      .then(() => console.log('🚀 Telegraf bridge iniciado'))
+      .catch(e => console.error('❌ Telegraf launch error:', e?.message || e));
+  } else {
+    console.log('📱 Telegram: DESACTIVADO (faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID)');
+  }
+} catch (e) {
+  console.error('❌ Telegraf init error:', e?.message || e);
+}
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 
@@ -2151,4 +2199,21 @@ function handleCommandTelegram(command, args, chatId, rol = 'owner') {
   } catch (e) {
     console.error('handleCommandTelegram wrapper error:', e.message);
   }
+}
+
+// ====== WhatsApp Slash Router (injected) ======
+async function __slashRouter(body, userId, chatId) {
+  const clean = String(body || '').trim();
+  if (!clean.startsWith('/')) return false;
+  const parts = clean.replace(/\s+/g, ' ').split(' ');
+  const command = parts[0].slice(1).toLowerCase();
+  const args = parts.slice(1);
+  if (typeof handleCommand === 'function') {
+    await handleCommand(command, args, userId, chatId, 'whatsapp');
+  } else if (typeof handleCommandTelegram === 'function') {
+    await handleCommandTelegram(command, args, chatId, 'owner');
+  }
+  return true; // consumed
+}
+))
 }
